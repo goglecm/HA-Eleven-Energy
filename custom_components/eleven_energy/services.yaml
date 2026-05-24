@@ -2,84 +2,200 @@ set_work_mode_self_consumption:
   name: Change work mode to Self Consumption
   description: Requests a change of work mode to Self Consumption, excess solar is sent to the battery and then on to the grid if the battery is full.
   target:
-    entity:
-      domain: sensor
+    device:
       integration: eleven_energy
+  response:
+    optional: true
   fields:
-    percentage_to_battery:
-      name: Percentage to battery
+    percent_to_battery:
+      name: Percent to battery
       description: The percentage of average excess solar to divert to the battery versus the grid. Specify an amount less than 100 to send some energy to the grid even when the battery isn't full.
       example: '100'
       required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: '%'
+          mode: slider
 
 set_work_mode_force_charge:
   name: Change work mode to Force Charge
   description: Requests a change of work mode to Force Charge to charge the battery from the grid.
   target:
-    entity:
-      domain: sensor
+    device:
       integration: eleven_energy
+  response:
+    optional: true
   fields:
     target_power:
       name: Charge power
       description: The amount of power to charge the battery.
       example: '3.5'
       required: true
+      selector:
+        number:
+          min: 0
+          max: 20
+          step: 0.1
+          unit_of_measurement: kW
+          mode: box
     target_percent:
       name: Target Percent
       description: The percentage State of Charge to charge the battery to, when the target is reached charging will stop but the battery will not be used.
       required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: '%'
+          mode: slider
 
 set_work_mode_grid_export:
   name: Change work mode to Grid Export
   description: Requests a change of work mode to Grid Export to discharge the battery out to the grid.
   target:
-    entity:
-      domain: sensor
+    device:
       integration: eleven_energy
+  response:
+    optional: true
   fields:
     target_power:
       name: Discharge power
-      description: The amount of power to export toi the grid.
+      description: The amount of power to export to the grid.
       example: '3.5'
       required: true
+      selector:
+        number:
+          min: 0
+          max: 20
+          step: 0.1
+          unit_of_measurement: kW
+          mode: box
     target_percent:
       name: Target Percent
       description: The percentage State of Charge to discharge until, once the state of charge is reached, only excess solar will be exported.
       required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: '%'
+          mode: slider
+    include_excess_solar:
+      name: Include excess solar
+      description: When enabled, adds the average amount of excess PV over the consumed amount to the export. Useful when ensuring the battery is discharged to a specified level.
+      example: 'false'
+      required: false
+      selector:
+        boolean: {}
+    overdrive:
+      name: Overdrive
+      description: Allow the system to exceed the configured export limit while discharging.
+      example: 'false'
+      required: false
+      selector:
+        boolean: {}
 
 set_work_mode_pv_export:
   name: Change work mode to PV Export Priority
   description: Requests a change of work mode to PV Export Priority to prefer to export excess solar to the grid rather than charge the battery.
   target:
-    entity:
-      domain: sensor
+    device:
       integration: eleven_energy
+  response:
+    optional: true
 
 set_work_mode_idle_battery:
   name: Change work mode to Idle Battery
   description: Requests a change of work mode to Idle Battery to disable charging or discharging of the battery.
   target:
-    entity:
-      domain: sensor
+    device:
       integration: eleven_energy
+  response:
+    optional: true
   fields:
     allow_charging:
       name: Allow Charging
       description: Allow charging of the battery ( i.e. only disallow discharge )
+      example: 'false'
       required: false
+      selector:
+        boolean: {}
     allow_discharging:
       name: Allow Discharging
       description: Allow discharging of the battery ( i.e. only disallow charging )
+      example: 'false'
       required: false
+      selector:
+        boolean: {}
+
+set_work_mode_target_soc:
+  name: Change work mode to Target State of Charge
+  description: Requests a change of work mode that targets a specific battery state of charge by a specific time, balancing charge and discharge based on available solar.
+  target:
+    device:
+      integration: eleven_energy
+  response:
+    optional: true
+  fields:
+    target_soc:
+      name: Target State Of Charge
+      description: The desired state of charge in percent to reach at the end of the period.
+      example: '80'
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: '%'
+          mode: slider
+    target_minutes:
+      name: Target Minutes
+      description: The number of minutes from initiating this command to reach the target state of charge by.
+      example: '120'
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 1440
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    max_charge_power:
+      name: Max Charge Power
+      description: The maximum kW used to charge the battery. Defaults to the battery's maximum charge rate.
+      example: '3.5'
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 20
+          step: 0.1
+          unit_of_measurement: kW
+          mode: box
+    max_discharge_power:
+      name: Max Discharge Power
+      description: The maximum kW used to discharge the battery. Defaults to the battery's maximum discharge rate.
+      example: '3.5'
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 20
+          step: 0.1
+          unit_of_measurement: kW
+          mode: box
 
 set_work_mode_reset:
   name: Reset work mode
-  description: Resets the work mode based on system configuration or schedules
+  description: Resets the work mode based on system configuration or schedules.
   target:
-    entity:
-      domain: sensor
+    device:
       integration: eleven_energy
-
-
-
+  response:
+    optional: true

@@ -1,0 +1,9 @@
+# Pinned-floor development dependencies for running the test suite.
+# Install with:
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r dev-requirements.txt
+#
+# The ``pytest-homeassistant-custom-component`` package pulls in Home Assistant
+# core, pytest, the full HA test helper stack (aioclient_mock, MockConfigEntry,
+# etc.), pytest-asyncio, pytest-cov and other commonly-needed plugins.
+pytest-homeassistant-custom-component>=0.13.333

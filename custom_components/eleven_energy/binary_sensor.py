@@ -1,4 +1,13 @@
-"""Eleven Energy Sensor init."""
+"""Eleven Energy ``binary_sensor`` platform.
+
+Mirror of :mod:`custom_components.eleven_energy.sensor` for boolean values.
+Predefined binary sensors (currently just the ``Online`` connectivity entity)
+are registered up front; the controller's add-entities callback is stashed so
+auto-discovered binary fields (anything :func:`_infer_meta` identifies as a
+``bool``) can be added on the fly during polling.
+"""
+
+from __future__ import annotations
 
 import logging
 
@@ -14,12 +23,13 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Set up binary sensor platform."""
-
-    # We'll grab all the devices from the controller, then iterate through and register any sensors within each device.
+    """Register curated binary sensors and arm dynamic discovery."""
     controller = hass.data[DOMAIN]["controller"]
-    for inverter in controller.devices.values():
-        async_add_entities(list(inverter.binary_sensor_entities.values()))
 
-    # Finally, call the controller setup completion so it can start updating sensors.
-    controller.complete_platform_setup("binary_sensor")
+    entities: list = []
+    for inverter in controller.devices.values():
+        entities.extend(inverter.binary_sensor_entities.values())
+    if entities:
+        async_add_entities(entities)
+
+    controller.complete_platform_setup("binary_sensor", async_add_entities)

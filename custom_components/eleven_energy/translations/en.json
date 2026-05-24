@@ -2,7 +2,7 @@
     "config": {
         "abort": {
             "already_configured": "Device is already configured",
-            "already_setup": "Only one hub allowed, configure existing using a CSV list of IP addresses"
+            "already_setup": "Only one Eleven Energy site can be configured. Use the existing entry's Configure button to change the token or update interval."
         },
         "error": {
             "cannot_connect": "Failed to connect",
@@ -21,7 +21,8 @@
         "step": {
             "init": {
                 "data": {
-                    "token": "API Token"
+                    "token": "API Token",
+                    "poll_interval_seconds": "Update interval (seconds)"
                 }
             }
         }
@@ -75,8 +76,12 @@
                     "gridexport": "Grid Export",
                     "idlebattery": "Idle Battery",
                     "pvexportpriority": "PV Export Priority",
-                    "targetsoc": "Target State of Charge"
+                    "targetsoc": "Target State of Charge",
+                    "reset": "Reset"
                     }
+            },
+            "firmware_version": {
+                "name": "Firmware Version"
             },
             "system_status": {
                 "name": "Status",
@@ -92,6 +97,11 @@
         "binary_sensor": {
             "system_online": {
                 "name": "Online"
+            }
+        },
+        "number": {
+            "poll_interval": {
+                "name": "Update Interval"
             }
         }
 
