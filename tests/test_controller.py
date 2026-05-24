@@ -310,6 +310,150 @@ class TestPollSite:
         assert info["name"] == "Eleven Energy Plus Inverter"
         assert info["serial_number"] == ""
 
+    async def test_name_wins_over_alternative_label_fields(
+        self,
+        controller: Controller,
+        aioclient_mock: AiohttpClientMocker,
+    ) -> None:
+        """When ``name`` is populated it is the source of truth.
+
+        Existing installations have always derived the device label from
+        the ``name`` field. Alternative fields (``model`` / ``productName``
+        / ``inverterModel``) are only fall-backs in case ``name`` is
+        missing or null, so a working install never sees a silent label
+        switch.
+        """
+        aioclient_mock.get(
+            f"{BASE_URL}site",
+            json={
+                "devices": [
+                    {
+                        "deviceId": "a",
+                        "type": "hybridinverter",
+                        "name": "Authoritative Name",
+                        "model": "Other Model",
+                        "productName": "Other Product",
+                        "inverterModel": "Other Inverter Model",
+                        "serialNumber": "SN-A",
+                    }
+                ]
+            },
+        )
+        assert await controller.poll_site() is True
+        info = controller.devices["a"].device_info
+        assert info["name"] == "Eleven Energy Plus Authoritative Name"
+        assert info["model"] == "Authoritative Name"
+
+    async def test_device_label_override_wins_over_api(
+        self,
+        hass: HomeAssistant,
+        aioclient_mock: AiohttpClientMocker,
+    ) -> None:
+        """The OptionsFlow override beats every API-derived label source."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={"token": "test-token"},
+            options={"device_label_override": "Mediterranean Sea 12"},
+            title="Eleven Energy Plus",
+        )
+        entry.add_to_hass(hass)
+        controller = Controller("test-token", hass, entry)
+
+        aioclient_mock.get(
+            f"{BASE_URL}site",
+            json={
+                "devices": [
+                    {
+                        "deviceId": "a",
+                        "type": "hybridinverter",
+                        "name": "North Sea 6",
+                        "model": "Other Model",
+                        "serialNumber": "SN",
+                    }
+                ]
+            },
+        )
+        assert await controller.poll_site() is True
+        info = controller.devices["a"].device_info
+        assert info["name"] == "Eleven Energy Plus Mediterranean Sea 12"
+        assert info["model"] == "Mediterranean Sea 12"
+
+    async def test_empty_or_whitespace_override_is_ignored(
+        self,
+        hass: HomeAssistant,
+        aioclient_mock: AiohttpClientMocker,
+    ) -> None:
+        """A blank/whitespace override does not affect the API-derived label."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={"token": "test-token"},
+            options={"device_label_override": "   "},
+            title="Eleven Energy Plus",
+        )
+        entry.add_to_hass(hass)
+        controller = Controller("test-token", hass, entry)
+
+        aioclient_mock.get(
+            f"{BASE_URL}site",
+            json={
+                "devices": [
+                    {
+                        "deviceId": "a",
+                        "type": "hybridinverter",
+                        "name": "Real Label",
+                        "serialNumber": "SN",
+                    }
+                ]
+            },
+        )
+        assert await controller.poll_site() is True
+        assert (
+            controller.devices["a"].device_info["name"]
+            == "Eleven Energy Plus Real Label"
+        )
+
+    async def test_alternative_label_fields_used_when_name_missing(
+        self,
+        controller: Controller,
+        aioclient_mock: AiohttpClientMocker,
+    ) -> None:
+        """Each alternative label is used in turn when ``name`` is null."""
+        aioclient_mock.get(
+            f"{BASE_URL}site",
+            json={
+                "devices": [
+                    {
+                        "deviceId": "a",
+                        "type": "hybridinverter",
+                        "name": None,
+                        "model": "From Model",
+                        "serialNumber": "SN-A",
+                    },
+                    {
+                        "deviceId": "b",
+                        "type": "hybridinverter",
+                        "name": None,
+                        "productName": "From Product",
+                        "serialNumber": "SN-B",
+                    },
+                    {
+                        "deviceId": "c",
+                        "type": "hybridinverter",
+                        "name": None,
+                        "inverterModel": "From Inverter Model",
+                        "serialNumber": "SN-C",
+                    },
+                ]
+            },
+        )
+        assert await controller.poll_site() is True
+        assert controller.devices["a"].device_info["model"] == "From Model"
+        assert controller.devices["b"].device_info["model"] == "From Product"
+        assert (
+            controller.devices["c"].device_info["model"]
+            == "From Inverter Model"
+        )
+
     async def test_non_hybrid_devices_skipped(
         self,
         controller: Controller,

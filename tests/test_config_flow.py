@@ -14,6 +14,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import (
 
 from custom_components.eleven_energy_plus.const import (
     BASE_URL,
+    CONF_DEVICE_LABEL,
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL_SECONDS,
     DOMAIN,
@@ -126,7 +127,10 @@ class TestOptionsFlow:
             result["flow_id"], {"token": "new-token", CONF_POLL_INTERVAL: 60}
         )
         assert result["type"] is FlowResultType.CREATE_ENTRY
-        assert result["data"] == {CONF_POLL_INTERVAL: 60}
+        # The options dict now also includes the (defaulted-to-empty)
+        # device-label override field that the OptionsFlow always
+        # persists - empty meaning "no override".
+        assert result["data"] == {CONF_POLL_INTERVAL: 60, CONF_DEVICE_LABEL: ""}
         assert entry.data["token"] == "new-token"
 
     async def test_options_flow_rejects_bad_token(
@@ -151,3 +155,54 @@ class TestOptionsFlow:
         assert result["errors"] == {"base": "invalid_auth"}
         # Entry data should NOT have been updated.
         assert entry.data["token"] == "t"
+
+    async def test_options_flow_persists_device_label_override(
+        self,
+        hass: HomeAssistant,
+        aioclient_mock: AiohttpClientMocker,
+    ) -> None:
+        """The override is round-tripped and whitespace is stripped."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={"token": "t"},
+            options={CONF_POLL_INTERVAL: 30},
+        )
+        entry.add_to_hass(hass)
+
+        aioclient_mock.get(f"{BASE_URL}site", status=200, json={"devices": []})
+
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                "token": "t",
+                CONF_POLL_INTERVAL: 30,
+                CONF_DEVICE_LABEL: "  Mediterranean Sea 12  ",
+            },
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_DEVICE_LABEL] == "Mediterranean Sea 12"
+
+    async def test_options_flow_form_prefills_override(
+        self,
+        hass: HomeAssistant,
+        aioclient_mock: AiohttpClientMocker,
+    ) -> None:
+        """An existing override is pre-populated on the form."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={"token": "t"},
+            options={CONF_POLL_INTERVAL: 30, CONF_DEVICE_LABEL: "Custom Label"},
+        )
+        entry.add_to_hass(hass)
+
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        assert result["type"] is FlowResultType.FORM
+        # The default for the override field on the rendered form should be
+        # the currently-stored override value.
+        schema_defaults = {
+            key.schema: key.default()
+            for key in result["data_schema"].schema
+            if hasattr(key, "default") and callable(key.default)
+        }
+        assert schema_defaults[CONF_DEVICE_LABEL] == "Custom Label"

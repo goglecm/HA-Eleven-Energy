@@ -35,7 +35,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN, PLATFORMS
+from .const import CONF_DEVICE_LABEL, DOMAIN, PLATFORMS
 from .controller import Controller
 
 _LOGGER = logging.getLogger(__name__)
@@ -194,21 +194,36 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """React to options or data updates from the OptionsFlow.
 
-    Two paths:
+    Three paths:
 
     * **Token changed** - the existing controller is bound to the old token
       and cannot recover. Trigger a full integration reload so a fresh
       controller is created against the new credentials.
-    * **Token unchanged** - only options moved (typically the poll interval).
-      Wake the poller via :meth:`Controller.notify_options_changed` so the
-      new cadence takes effect on the next iteration without dropping any
-      already-loaded entity state.
+    * **Device-label override changed** - the override is consumed when
+      :class:`~.hybrid_inverter.HybridInverter` is constructed and its
+      ``DeviceInfo`` is registered with Home Assistant. Mutating an
+      already-registered device's name/model cleanly requires re-running
+      that registration, so we trigger a full reload here too. This is
+      rare (users typically set the override once and forget it).
+    * **Options-only change** (e.g. poll interval). Wake the poller via
+      :meth:`Controller.notify_options_changed` so the new cadence takes
+      effect on the next iteration without dropping any already-loaded
+      entity state.
     """
     controller: Controller | None = hass.data.get(DOMAIN, {}).get("controller")
     if controller is None:
         return
 
     if controller.token != entry.data.get("token"):
+        await hass.config_entries.async_reload(entry.entry_id)
+        return
+
+    new_override = entry.options.get(CONF_DEVICE_LABEL, "")
+    if isinstance(new_override, str):
+        new_override = new_override.strip()
+    else:
+        new_override = ""
+    if new_override != controller.configured_device_label:
         await hass.config_entries.async_reload(entry.entry_id)
         return
 

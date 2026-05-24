@@ -39,9 +39,21 @@ You will also need an API token obtained through the Site & System Settings page
 The integration polls your inverter every 15 seconds by default. You can change this in two ways:
 
 - **`number.{device_id}_poll_interval`** - a Number entity exposed on the inverter device. Set it from 5 to 300 seconds; the new cadence takes effect immediately.
-- **Settings -> Devices & Services -> Eleven Energy -> Configure** - lets you change both the API token and the update interval.
+- **Settings -> Devices & Services -> Eleven Energy Plus -> Configure** - lets you change the API token, the update interval, and the device label override.
 
 Changing the interval from either surface wakes the background poller immediately, so the next API call lands at the new cadence rather than having to wait for the current sleep to expire.
+
+## Device label override
+
+If the Eleven Energy site API mislabels your hardware (e.g. it reports a stale "North Sea 6" against an actual Mediterranean Sea 12 inverter), open **Settings -> Devices & Services -> Eleven Energy Plus -> Configure** and fill in **Device label override** with the correct hardware string. The integration will then use it for both the device card title and the model field, regardless of what the API returns.
+
+Leave the field blank to fall back to the API-derived label (the historical behaviour). Changing the override triggers a brief integration reload so the new label is applied cleanly to the device registry; entity history is preserved.
+
+To verify what the API actually returns for your inverter, set Home Assistant to debug-log the integration (see [Troubleshooting](#troubleshooting)) or look at the INFO line logged on first discovery:
+
+```
+custom_components.eleven_energy_plus.controller: Eleven Energy Plus discovered inverter <id>; raw site payload: {...}
+```
 
 ## Entities
 
@@ -70,7 +82,7 @@ These are created up front for every discovered hybrid inverter, with units and 
 | Online | `_system_online` | - | Binary sensor (Connectivity, Diagnostic) | Cloud reachability |
 | Update Interval | `_poll_interval` | s | Number (Config) | Configurable poll cadence |
 
-> Upgrading from 1.2 or earlier? The old `sensor.{device_id}_system_online` entity has moved to its correct domain at `binary_sensor.{device_id}_system_online`. The integration removes the legacy registry entry automatically on first start.
+> The old `sensor.{device_id}_system_online` entity from `iPeel/HA-Eleven-Energy` 1.2 and earlier is exposed at its correct `binary_sensor.{device_id}_system_online` location under this fork. Eleven Energy Plus uses a different integration domain (`eleven_energy_plus`) than the original, so no automatic registry migration is performed - users moving from the original integration get a fresh entity registry.
 
 ### Auto-discovered entities
 

@@ -50,3 +50,11 @@ MAX_POLL_INTERVAL_SECONDS = 300
 # Granularity of the OptionsFlow slider and Number entity. Five-second steps
 # give a smooth slider while still landing on round numbers.
 POLL_INTERVAL_STEP_SECONDS = 5
+
+# Key used in ``ConfigEntry.options`` to persist an optional override for the
+# device-card label / model. When the upstream site API mislabels a user's
+# hardware (e.g. a stale "North Sea 6" provisioning default on a real
+# Mediterranean Sea 12) this option lets the user pin the displayed label to
+# whatever they want without contacting Eleven Energy support. Empty string or
+# missing key means "no override - use the API-derived label".
+CONF_DEVICE_LABEL = "device_label_override"

@@ -39,6 +39,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     BASE_URL,
+    CONF_DEVICE_LABEL,
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL_SECONDS,
     DOMAIN,
@@ -208,6 +209,22 @@ class Controller:
         # Debug breadcrumb: we log the first device payload once per process
         # to help users (and us) understand the API's shape on their site.
         self._logged_first_payload = False
+        # Snapshot of the device-label override active at construction time.
+        # Used by ``_async_options_updated`` to decide whether the override
+        # has actually changed, since :attr:`device_label_override` always
+        # reads the current (possibly already-updated) entry options.
+        self._configured_device_label = self.device_label_override
+
+    @property
+    def configured_device_label(self) -> str:
+        """Return the device-label override snapshot from construction time.
+
+        Compare new option values against this (not :attr:`device_label_override`)
+        when deciding whether the override has changed - the live property
+        reflects whatever is currently in ``entry.options``, which HA
+        mutates in place before option-update listeners fire.
+        """
+        return self._configured_device_label
 
     @property
     def poll_interval(self) -> int:
@@ -220,6 +237,19 @@ class Controller:
         except (TypeError, ValueError):
             value = DEFAULT_POLL_INTERVAL_SECONDS
         return max(MIN_POLL_INTERVAL_SECONDS, min(MAX_POLL_INTERVAL_SECONDS, value))
+
+    @property
+    def device_label_override(self) -> str:
+        """Return the user-supplied device-card label, or ``""`` if unset.
+
+        Strips whitespace and coerces non-string values defensively so the
+        rest of the integration can rely on a clean, possibly-empty string
+        without re-validating. An empty string means "no override".
+        """
+        raw = self.entry.options.get(CONF_DEVICE_LABEL, "")
+        if not isinstance(raw, str):
+            return ""
+        return raw.strip()
 
     def register_platform(
         self, platform: str, callback: AddEntitiesCallback
@@ -697,21 +727,73 @@ class Controller:
                 continue
             if device_id in self.devices:
                 continue
+
+            # Log the raw site-payload entry for this device at INFO so users
+            # who suspect the upstream API is mislabelling their hardware can
+            # verify what was actually returned without first having to enable
+            # debug logging. Issued once per device (newly-discovered devices
+            # short-circuit on ``device_id in self.devices`` above).
+            _LOGGER.info(
+                "Eleven Energy Plus discovered inverter %s; raw site payload: %s",
+                device_id,
+                device,
+            )
+
+            # Pick the most informative product-label field the API exposes.
+            # ``name`` is the historically-used field and remains the primary
+            # source so existing installations see no behaviour change.
+            # ``model`` / ``productName`` / ``inverterModel`` are tried in
+            # order only as fall-backs, so an Eleven Energy account whose
+            # ``name`` is empty/null still gets a sensible device label if
+            # the API carries the product info elsewhere.
+            #
+            # If ``name`` is populated but mislabelled (e.g. a stale
+            # provisioning default like "North Sea 6" against actual
+            # Mediterranean Sea 12 hardware) we still pass it through here:
+            # that is an upstream data issue and changing field priority
+            # silently would surprise users whose ``name`` is correct.
+            # The raw payload logged just above lets affected users
+            # confirm what the API returned, and the user-supplied
+            # ``device_label_override`` (read from options just below) lets
+            # them pin the displayed label without waiting on Eleven Energy
+            # support.
+            device_name = (
+                device.get("name")
+                or device.get("model")
+                or device.get("productName")
+                or device.get("inverterModel")
+                or "Inverter"
+            )
+            # Apply the optional user override last so it wins over every
+            # API-derived choice above. Stored as a stripped string by the
+            # OptionsFlow; treat anything falsy (empty string, missing key)
+            # as "no override".
+            override = self.device_label_override
+            if override:
+                _LOGGER.info(
+                    "Eleven Energy Plus applying device label override for %s: "
+                    "%r (API said %r)",
+                    device_id,
+                    override,
+                    device_name,
+                )
+                device_name = override
             # Coerce ``null`` API values with ``or`` rather than ``dict.get``
             # defaults, since ``dict.get`` only falls back when the key is
-            # missing entirely. The fallback name is intentionally generic
-            # ("Inverter") so :class:`HybridInverter` ends up with a sensible
+            # missing entirely. The "Inverter" tail yields a sensible
             # composite device card name like "Eleven Energy Plus Inverter"
             # rather than the brand-doubled "Eleven Energy Plus Eleven Energy".
             inverter = HybridInverter(
                 self.hass,
                 self,
                 device_id,
-                device.get("name") or "Inverter",
+                device_name,
                 device.get("serialNumber") or "",
             )
             self.devices[device_id] = inverter
-            _LOGGER.info("Created inverter %s", device_id)
+            _LOGGER.info(
+                "Created inverter %s (label=%r)", device_id, device_name
+            )
 
             # If platforms have already initialised, register the new device's
             # static entities immediately. The poll-interval Number entity is only

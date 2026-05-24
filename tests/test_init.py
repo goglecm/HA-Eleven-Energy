@@ -204,6 +204,88 @@ class TestOptionsUpdated:
         assert notifications, "option listener was never invoked"
         assert controller.poll_interval == 45
 
+    async def test_device_label_override_change_triggers_reload(
+        self,
+        hass: HomeAssistant,
+        entry: MockConfigEntry,
+        aioclient_mock: AiohttpClientMocker,
+    ) -> None:
+        """Toggling the device-label override forces a full reload."""
+        from custom_components.eleven_energy_plus.const import CONF_DEVICE_LABEL
+
+        aioclient_mock.get(f"{BASE_URL}site", json=_site_payload("abc"))
+        aioclient_mock.get(
+            f"{BASE_URL}devices/abc", json=_device_payload("abc")
+        )
+
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        reload_called = False
+
+        async def fake_reload(entry_id: str) -> bool:
+            nonlocal reload_called
+            reload_called = True
+            return True
+
+        with patch.object(
+            hass.config_entries, "async_reload", side_effect=fake_reload
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={**entry.options, CONF_DEVICE_LABEL: "Custom"},
+            )
+            await hass.async_block_till_done()
+
+        assert reload_called
+
+    async def test_device_label_override_whitespace_does_not_reload(
+        self,
+        hass: HomeAssistant,
+        entry: MockConfigEntry,
+        aioclient_mock: AiohttpClientMocker,
+    ) -> None:
+        """Saving the same override with extra spaces does not trigger a reload."""
+        from custom_components.eleven_energy_plus.const import CONF_DEVICE_LABEL
+
+        aioclient_mock.get(f"{BASE_URL}site", json=_site_payload("abc"))
+        aioclient_mock.get(
+            f"{BASE_URL}devices/abc", json=_device_payload("abc")
+        )
+
+        # Pre-seed the entry with an override so the controller snapshots it
+        # at construction time.
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={"token": "test-token"},
+            options={CONF_POLL_INTERVAL: 30, CONF_DEVICE_LABEL: "Custom"},
+            title="Eleven Energy Plus",
+        )
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        reload_called = False
+
+        async def fake_reload(entry_id: str) -> bool:
+            nonlocal reload_called
+            reload_called = True
+            return True
+
+        with patch.object(
+            hass.config_entries, "async_reload", side_effect=fake_reload
+        ):
+            # Same effective value (after strip) - the reload check compares
+            # against the controller's construction-time snapshot.
+            hass.config_entries.async_update_entry(
+                entry,
+                options={**entry.options, CONF_DEVICE_LABEL: "  Custom  "},
+            )
+            await hass.async_block_till_done()
+
+        assert not reload_called
+
 
 class TestServiceResponse:
     """The set_work_mode_* services return a structured response dict."""

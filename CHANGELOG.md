@@ -31,6 +31,32 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   API token, and rewrite any automations / dashboards. Coexistence is
   supported but no automatic data transfer.
 
+### Added
+
+- **Device label override.** New optional text field in the OptionsFlow
+  (Settings -> Devices & Services -> Eleven Energy Plus -> Configure ->
+  "Device label override"). When set, it pins the device-card title and
+  model to whatever the user types, regardless of what the
+  `https://api.elevenenergy.co.uk/site` endpoint returns. Useful when the
+  upstream API has the wrong product label for an inverter (e.g. a stale
+  "North Sea 6" provisioning default against actual Mediterranean Sea 12
+  hardware). Leaving the field blank preserves the historical
+  API-derived behaviour. Changing the override triggers a brief
+  integration reload so the new label is cleanly applied to the device
+  registry; entity history is preserved.
+- **First-discovery diagnostic log.** On the first sight of each
+  inverter the integration now logs the full raw site-payload dict at
+  INFO level
+  (`Eleven Energy Plus discovered inverter <id>; raw site payload: ...`),
+  so users investigating a mislabelled device can see exactly which
+  fields the API populated without having to enable debug logging
+  first.
+- **Alternative label-field fallback.** When the site API's `name`
+  field is empty or missing, the discovery code now tries
+  `model` -> `productName` -> `inverterModel` in order before falling
+  back to the generic "Inverter" placeholder. Installations with a
+  populated `name` see no behaviour change.
+
 ### Fixed
 
 - Null `name` from the site API previously produced a brand-doubled

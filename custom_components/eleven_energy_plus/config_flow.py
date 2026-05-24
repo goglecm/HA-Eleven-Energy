@@ -35,10 +35,13 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
 )
 
 from .const import (
     BASE_URL,
+    CONF_DEVICE_LABEL,
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL_SECONDS,
     DOMAIN,
@@ -178,9 +181,17 @@ class OptionsFlowHandler(OptionsFlow):
         Validates the (possibly new) token against the API, persists it on
         the entry's ``data`` (so :func:`_async_options_updated` notices the
         change and triggers a reload), and saves the clamped poll interval
-        on the entry's ``options``. The clamp here is defence-in-depth: the
-        :class:`NumberSelector` schema already enforces the bounds, but a
-        manually-crafted UI payload could otherwise slip past.
+        plus the optional device-label override on the entry's ``options``.
+        The clamp here is defence-in-depth: the :class:`NumberSelector`
+        schema already enforces the interval bounds, but a manually-crafted
+        UI payload could otherwise slip past.
+
+        The device-label override is intentionally a free-text string. An
+        empty string means "no override - keep using the API-derived label".
+        Changing it triggers a full reload from :func:`_async_options_updated`
+        because device-card info is captured at platform-setup time and
+        applying a new label to an already-registered device cleanly
+        requires re-running entity registration.
         """
         errors: dict[str, str] = {}
 
@@ -201,6 +212,11 @@ class OptionsFlowHandler(OptionsFlow):
                     MIN_POLL_INTERVAL_SECONDS,
                     min(MAX_POLL_INTERVAL_SECONDS, new_interval),
                 )
+                # Normalise the override: collapse whitespace, treat blanks
+                # as "unset" so the option stays comparable across save/load
+                # cycles and ``_async_options_updated`` can detect changes
+                # without false positives on leading/trailing spaces.
+                device_label = str(user_input.get(CONF_DEVICE_LABEL, "")).strip()
                 self.hass.config_entries.async_update_entry(
                     self.config_entry,
                     data={"token": token},
@@ -211,12 +227,14 @@ class OptionsFlowHandler(OptionsFlow):
                     data={
                         **self.config_entry.options,
                         CONF_POLL_INTERVAL: new_interval,
+                        CONF_DEVICE_LABEL: device_label,
                     },
                 )
 
         current_interval = self.config_entry.options.get(
             CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL_SECONDS
         )
+        current_label = self.config_entry.options.get(CONF_DEVICE_LABEL, "")
 
         return self.async_show_form(
             step_id="init",
@@ -236,6 +254,9 @@ class OptionsFlowHandler(OptionsFlow):
                             unit_of_measurement="s",
                         )
                     ),
+                    vol.Optional(
+                        CONF_DEVICE_LABEL, default=current_label
+                    ): TextSelector(TextSelectorConfig()),
                 }
             ),
             errors=errors,

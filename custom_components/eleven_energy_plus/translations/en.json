@@ -22,7 +22,11 @@
             "init": {
                 "data": {
                     "token": "API Token",
-                    "poll_interval_seconds": "Update interval (seconds)"
+                    "poll_interval_seconds": "Update interval (seconds)",
+                    "device_label_override": "Device label override (optional)"
+                },
+                "data_description": {
+                    "device_label_override": "Leave blank to use the label the Eleven Energy site API returns. Set to override the device-card title and model (e.g. \"Mediterranean Sea 12\") when the upstream label is wrong. Changing this triggers an integration reload."
                 }
             }
         }
