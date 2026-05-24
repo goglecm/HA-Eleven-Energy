@@ -13,7 +13,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
 )
 
-from custom_components.eleven_energy.const import (
+from custom_components.eleven_energy_plus.const import (
     BASE_URL,
     CONF_POLL_INTERVAL,
     DOMAIN,
@@ -251,7 +251,7 @@ class TestServiceResponse:
     ) -> None:
         """Calling the service before setup yields a structured error."""
         # Bootstrap async_setup so services are registered without an entry.
-        from custom_components.eleven_energy import async_setup
+        from custom_components.eleven_energy_plus import async_setup
 
         await async_setup(hass, {})
 

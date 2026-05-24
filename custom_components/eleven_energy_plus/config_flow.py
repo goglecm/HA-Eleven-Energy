@@ -1,12 +1,12 @@
-"""Config flow + Options flow for the Eleven Energy integration.
+"""Config flow + Options flow for the Eleven Energy Plus integration.
 
 Two related flows live here:
 
 * :class:`ConfigFlow` - the initial UI-driven setup. The user supplies an API
   token; we hit the site endpoint once to verify it, distinguishing 401/403
   (``invalid_auth``) from any other failure (``cannot_connect``), and bail
-  out if an Eleven Energy entry already exists so users can't accidentally
-  register the same site twice.
+  out if an Eleven Energy Plus entry already exists so users can't
+  accidentally register the same site twice.
 * :class:`OptionsFlowHandler` - the "Configure" button on the integration
   page. Lets the user update the token and the poll interval. The token is
   validated against the API again before being persisted, and the integer
@@ -92,7 +92,7 @@ async def _check_token(hass: HomeAssistant, token: str) -> None:
     except (InvalidAuth, CannotConnect):
         raise
     except Exception as err:  # noqa: BLE001
-        _LOGGER.debug("Eleven Energy token check raised %s", err)
+        _LOGGER.debug("Eleven Energy Plus token check raised %s", err)
         raise CannotConnect from err
 
 
@@ -104,13 +104,13 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     :class:`CannotConnect` for any other failure.
     """
     await _check_token(hass, data["token"])
-    return {"title": "Eleven Energy"}
+    return {"title": "Eleven Energy Plus"}
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle the initial setup flow for Eleven Energy.
+    """Handle the initial setup flow for Eleven Energy Plus.
 
-    Only a single Eleven Energy site is supported per Home Assistant
+    Only a single Eleven Energy Plus site is supported per Home Assistant
     instance; a second attempt is aborted with the ``already_setup`` reason.
     On success the new entry is created with the default poll interval in
     ``options`` so the Number entity and OptionsFlow have something sensible
@@ -163,7 +163,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class OptionsFlowHandler(OptionsFlow):
-    """Eleven Energy Options Flow handler.
+    """Eleven Energy Plus Options Flow handler.
 
     Intentionally has no ``__init__`` - ``self.config_entry`` is provided by
     the :class:`OptionsFlow` base class. Manually assigning it is deprecated
@@ -204,7 +204,7 @@ class OptionsFlowHandler(OptionsFlow):
                 self.hass.config_entries.async_update_entry(
                     self.config_entry,
                     data={"token": token},
-                    title="Eleven Energy",
+                    title="Eleven Energy Plus",
                 )
                 return self.async_create_entry(
                     title="",

@@ -1,7 +1,7 @@
-"""The main Eleven Energy coordinator.
+"""The main Eleven Energy Plus coordinator.
 
-The :class:`Controller` is the only thing that talks to the Eleven Energy
-cloud API. It owns:
+The :class:`Controller` is the only thing in the integration that talks to
+the Eleven Energy cloud API. It owns:
 
 * The bearer token and the shared aiohttp session via
   :func:`async_get_clientsession`.
@@ -148,7 +148,7 @@ class _WorkModeRequest:
 
 
 class Controller:
-    """Coordinator for a single Eleven Energy config entry.
+    """Coordinator for a single Eleven Energy Plus config entry.
 
     A controller is constructed by :func:`async_setup_entry`, populated by an
     initial :meth:`poll_site` (which discovers the hybrid inverter devices),
@@ -259,7 +259,7 @@ class Controller:
             try:
                 listener()
             except Exception:  # noqa: BLE001
-                _LOGGER.exception("Eleven Energy option listener raised")
+                _LOGGER.exception("Eleven Energy Plus option listener raised")
 
     async def send_reliable_post(
         self, url_suffix: str, payload: dict[str, Any]
@@ -279,7 +279,8 @@ class Controller:
         while attempts < _MAX_POST_ATTEMPTS:
             if self._terminated:
                 _LOGGER.info(
-                    "Aborting Eleven Energy POST to %s due to shutdown", url_suffix
+                    "Aborting Eleven Energy Plus POST to %s due to shutdown",
+                    url_suffix,
                 )
                 break
 
@@ -301,7 +302,9 @@ class Controller:
                             status=200, body=last_body, attempts=attempts
                         )
             except Exception:  # noqa: BLE001
-                _LOGGER.exception("Eleven Energy POST to %s failed", url_suffix)
+                _LOGGER.exception(
+                    "Eleven Energy Plus POST to %s failed", url_suffix
+                )
 
             if attempts >= _MAX_POST_ATTEMPTS:
                 break
@@ -341,7 +344,9 @@ class Controller:
             clamped = _clamp_percent(data[user_key])
             if clamped is None:
                 _LOGGER.warning(
-                    "Eleven Energy ignoring uncoercible %s=%r", user_key, data[user_key]
+                    "Eleven Energy Plus ignoring uncoercible %s=%r",
+                    user_key,
+                    data[user_key],
                 )
                 return
             request.user_params[user_key] = clamped
@@ -353,7 +358,9 @@ class Controller:
             clamped = _clamp_power_kw(data[user_key])
             if clamped is None:
                 _LOGGER.warning(
-                    "Eleven Energy ignoring uncoercible %s=%r", user_key, data[user_key]
+                    "Eleven Energy Plus ignoring uncoercible %s=%r",
+                    user_key,
+                    data[user_key],
                 )
                 return
             request.user_params[user_key] = clamped
@@ -365,7 +372,9 @@ class Controller:
             clamped = _clamp_minutes(data[user_key])
             if clamped is None:
                 _LOGGER.warning(
-                    "Eleven Energy ignoring uncoercible %s=%r", user_key, data[user_key]
+                    "Eleven Energy Plus ignoring uncoercible %s=%r",
+                    user_key,
+                    data[user_key],
                 )
                 return
             request.user_params[user_key] = clamped
@@ -484,7 +493,7 @@ class Controller:
         device_id = self._resolve_target_device(data)
         if device_id is None:
             _LOGGER.warning("Cannot perform set workmode as no device determined")
-            result["error"] = "no Eleven Energy device available"
+            result["error"] = "no Eleven Energy Plus device available"
             return result
         result["device_id"] = device_id
 
@@ -530,7 +539,7 @@ class Controller:
         config-entry retry/backoff kicks in instead of leaving an empty,
         zero-entity integration sitting in the registry.
         """
-        _LOGGER.info("Eleven Energy initialising")
+        _LOGGER.info("Eleven Energy Plus initialising")
         succeeded = await self.poll_site()
         if not succeeded:
             raise ConfigEntryNotReady(
@@ -561,12 +570,12 @@ class Controller:
             try:
                 await self.poll_devices()
             except Exception:  # noqa: BLE001
-                _LOGGER.exception("Eleven Energy initial device poll failed")
+                _LOGGER.exception("Eleven Energy Plus initial device poll failed")
 
             while not self._terminated:
                 interval = self.poll_interval
                 _LOGGER.debug(
-                    "Eleven Energy next poll in %ss (or sooner on options change)",
+                    "Eleven Energy Plus next poll in %ss (or sooner on options change)",
                     interval,
                 )
                 try:
@@ -581,15 +590,15 @@ class Controller:
                 try:
                     await self.poll_site()
                 except Exception:  # noqa: BLE001
-                    _LOGGER.exception("Eleven Energy site poll failed")
+                    _LOGGER.exception("Eleven Energy Plus site poll failed")
 
                 try:
                     await self.poll_devices()
                 except Exception:  # noqa: BLE001
-                    _LOGGER.exception("Eleven Energy device poll failed")
+                    _LOGGER.exception("Eleven Energy Plus device poll failed")
 
         self.poller_task = self.entry.async_create_background_task(
-            self.hass, periodic(), "Eleven Energy Poll"
+            self.hass, periodic(), "Eleven Energy Plus Poll"
         )
 
     async def poll_devices(self) -> None:
@@ -612,7 +621,7 @@ class Controller:
                 ) as response:
                     if response.status != 200:
                         _LOGGER.warning(
-                            "Eleven Energy device %s API responded with %s",
+                            "Eleven Energy Plus device %s API responded with %s",
                             device.device_id,
                             response.status,
                         )
@@ -620,7 +629,8 @@ class Controller:
                     payload = await response.json()
             except Exception:  # noqa: BLE001
                 _LOGGER.exception(
-                    "Failed polling Eleven Energy device %s", device.device_id
+                    "Failed polling Eleven Energy Plus device %s",
+                    device.device_id,
                 )
                 continue
 
@@ -629,7 +639,7 @@ class Controller:
                 if len(rendered) > _PAYLOAD_LOG_LIMIT:
                     rendered = f"{rendered[:_PAYLOAD_LOG_LIMIT]}... (truncated)"
                 _LOGGER.debug(
-                    "Eleven Energy first device payload for %s: %s",
+                    "Eleven Energy Plus first device payload for %s: %s",
                     device.device_id,
                     rendered,
                 )
@@ -639,7 +649,8 @@ class Controller:
                 device.update(payload)
             except Exception:  # noqa: BLE001
                 _LOGGER.exception(
-                    "Failed processing Eleven Energy device %s update", device.device_id
+                    "Failed processing Eleven Energy Plus device %s update",
+                    device.device_id,
                 )
 
     async def poll_site(self) -> bool:
@@ -670,13 +681,13 @@ class Controller:
             ) as response:
                 if response.status != 200:
                     _LOGGER.warning(
-                        "Eleven Energy call to site API responded with %s",
+                        "Eleven Energy Plus call to site API responded with %s",
                         response.status,
                     )
                     return False
                 payload = await response.json()
         except Exception:  # noqa: BLE001
-            _LOGGER.exception("Eleven Energy site poll failed")
+            _LOGGER.exception("Eleven Energy Plus site poll failed")
             return False
 
         for device in payload.get("devices", []):
@@ -686,13 +697,17 @@ class Controller:
                 continue
             if device_id in self.devices:
                 continue
-            # Coerce ``null`` API values with ``or`` rather than ``dict.get`` defaults,
-            # since ``dict.get`` only falls back when the key is missing entirely.
+            # Coerce ``null`` API values with ``or`` rather than ``dict.get``
+            # defaults, since ``dict.get`` only falls back when the key is
+            # missing entirely. The fallback name is intentionally generic
+            # ("Inverter") so :class:`HybridInverter` ends up with a sensible
+            # composite device card name like "Eleven Energy Plus Inverter"
+            # rather than the brand-doubled "Eleven Energy Plus Eleven Energy".
             inverter = HybridInverter(
                 self.hass,
                 self,
                 device_id,
-                device.get("name") or "Eleven Energy",
+                device.get("name") or "Inverter",
                 device.get("serialNumber") or "",
             )
             self.devices[device_id] = inverter
@@ -750,5 +765,7 @@ class Controller:
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
         except Exception:  # noqa: BLE001
-            _LOGGER.exception("Eleven Energy poll task raised during termination")
-        _LOGGER.info("Eleven Energy is no longer polling")
+            _LOGGER.exception(
+                "Eleven Energy Plus poll task raised during termination"
+            )
+        _LOGGER.info("Eleven Energy Plus is no longer polling")

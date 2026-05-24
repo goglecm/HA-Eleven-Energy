@@ -1,13 +1,14 @@
-"""The Eleven Energy integration.
+"""The Eleven Energy Plus integration.
 
-This module is the integration's lifecycle entry point. It is responsible for:
+This is the community fork's lifecycle entry point. It is responsible for:
 
-* Declaring that Eleven Energy is configured via the UI only (no YAML).
-* Registering the ``eleven_energy.set_work_mode_*`` services exactly once,
-  with ``supports_response=OPTIONAL`` so automations can branch on the result.
+* Declaring that Eleven Energy Plus is configured via the UI only (no YAML).
+* Registering the ``eleven_energy_plus.set_work_mode_*`` services exactly
+  once, with ``supports_response=OPTIONAL`` so automations can branch on
+  the result.
 * Setting up a :class:`Controller` per config entry, running the initial site
-  poll, migrating legacy entities, forwarding setup to the sensor / binary
-  sensor / number platforms, and subscribing to OptionsFlow updates.
+  poll, forwarding setup to the sensor / binary sensor / number platforms,
+  and subscribing to OptionsFlow updates.
 * Unwinding all of the above cleanly on unload, including stopping the
   background poller before tearing down the entities it might write to.
 * Handling option/data updates - either reloading on a token change or
@@ -15,8 +16,13 @@ This module is the integration's lifecycle entry point. It is responsible for:
 
 The implementation deliberately keeps state minimal: every config entry's
 ``Controller`` is stored at ``hass.data[DOMAIN]["controller"]``. Today only
-one Eleven Energy site is supported per HA instance (the config flow enforces
-that), so a flat dict suffices.
+one Eleven Energy Plus site is supported per HA instance (the config flow
+enforces that), so a flat dict suffices.
+
+The integration is deliberately *namespaced* under
+``custom_components/eleven_energy_plus/`` (rather than ``eleven_energy``) so
+HACS can install it alongside the original, unmaintained ``iPeel`` HACS
+repository without colliding.
 """
 
 from __future__ import annotations
@@ -27,7 +33,6 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN, PLATFORMS
@@ -80,7 +85,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             # unload). Surface the same shape as a normal failure so
             # automations don't have to special-case "no controller".
             _LOGGER.warning(
-                "No Eleven Energy controller available to handle service %s",
+                "No Eleven Energy Plus controller available to handle service %s",
                 call.service,
             )
             return {
@@ -105,12 +110,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 supports_response=SupportsResponse.OPTIONAL,
             )
 
-    _LOGGER.debug("Registered Eleven Energy services")
+    _LOGGER.debug("Registered Eleven Energy Plus services")
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Eleven Energy from a config entry.
+    """Set up Eleven Energy Plus from a config entry.
 
     Lifecycle:
 
@@ -120,15 +125,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     3. ``controller.initialise()`` runs the initial site poll; it raises
        :class:`~homeassistant.exceptions.ConfigEntryNotReady` on transient
        failures so Home Assistant's standard retry/backoff kicks in.
-    4. Migrate any legacy entities created by older versions.
-    5. Forward setup to every platform in :data:`PLATFORMS`. The poller is
+    4. Forward setup to every platform in :data:`PLATFORMS`. The poller is
        started by the last platform that calls
        :meth:`Controller.complete_platform_setup`, guaranteeing that all
        ``async_add_entities`` callbacks are wired up before any data lands.
-    6. Subscribe to options/data updates so token edits trigger a reload and
+    5. Subscribe to options/data updates so token edits trigger a reload and
        cadence edits propagate without one.
 
-    Any exception during steps 3-5 rolls back the in-flight controller so a
+    Any exception during steps 3-4 rolls back the in-flight controller so a
     repeat setup (after the user fixes the issue) starts from a clean slate.
     """
 
@@ -137,15 +141,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     controller = Controller(entry.data["token"], hass, entry)
     hass.data[DOMAIN]["controller"] = controller
 
-    _LOGGER.info("Eleven Energy starting up")
+    _LOGGER.info("Eleven Energy Plus starting up")
     try:
         await controller.initialise()
-        _async_migrate_legacy_entities(hass, controller)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except Exception:
-        # Any failure during initialise/migrate/forward must roll back the
-        # in-flight controller so a subsequent retry (or repeat config flow)
-        # starts from a clean slate.
+        # Any failure during initialise/forward must roll back the in-flight
+        # controller so a subsequent retry (or repeat config flow) starts
+        # from a clean slate.
         await controller.terminate()
         hass.data.get(DOMAIN, {}).pop("controller", None)
         raise
@@ -186,28 +189,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.data.pop(DOMAIN, None)
 
     return unload_ok
-
-
-def _async_migrate_legacy_entities(hass: HomeAssistant, controller: Controller) -> None:
-    """Clean up the legacy ``sensor.*_system_online`` entry from before 1.3.
-
-    Releases up to and including 1.2 accidentally registered the connectivity
-    entity under the ``sensor`` platform. From 1.3 onwards it is correctly a
-    ``binary_sensor`` (``binary_sensor.*_system_online``). The new entity is
-    created with the canonical unique id, so the only thing left is to drop
-    the stale registry row to avoid the "duplicate entity" warning.
-    """
-    ent_reg = er.async_get(hass)
-    for device_id in controller.devices:
-        legacy_unique_id = f"{device_id}_system_online"
-        legacy_entity_id = ent_reg.async_get_entity_id(
-            "sensor", DOMAIN, legacy_unique_id
-        )
-        if legacy_entity_id is not None:
-            _LOGGER.info(
-                "Removing legacy mis-domained entity %s", legacy_entity_id
-            )
-            ent_reg.async_remove(legacy_entity_id)
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:

@@ -3,7 +3,7 @@ set_work_mode_self_consumption:
   description: Requests a change of work mode to Self Consumption, excess solar is sent to the battery and then on to the grid if the battery is full.
   target:
     device:
-      integration: eleven_energy
+      integration: eleven_energy_plus
   response:
     optional: true
   fields:
@@ -25,7 +25,7 @@ set_work_mode_force_charge:
   description: Requests a change of work mode to Force Charge to charge the battery from the grid.
   target:
     device:
-      integration: eleven_energy
+      integration: eleven_energy_plus
   response:
     optional: true
   fields:
@@ -58,7 +58,7 @@ set_work_mode_grid_export:
   description: Requests a change of work mode to Grid Export to discharge the battery out to the grid.
   target:
     device:
-      integration: eleven_energy
+      integration: eleven_energy_plus
   response:
     optional: true
   fields:
@@ -105,7 +105,7 @@ set_work_mode_pv_export:
   description: Requests a change of work mode to PV Export Priority to prefer to export excess solar to the grid rather than charge the battery.
   target:
     device:
-      integration: eleven_energy
+      integration: eleven_energy_plus
   response:
     optional: true
 
@@ -114,7 +114,7 @@ set_work_mode_idle_battery:
   description: Requests a change of work mode to Idle Battery to disable charging or discharging of the battery.
   target:
     device:
-      integration: eleven_energy
+      integration: eleven_energy_plus
   response:
     optional: true
   fields:
@@ -138,7 +138,7 @@ set_work_mode_target_soc:
   description: Requests a change of work mode that targets a specific battery state of charge by a specific time, balancing charge and discharge based on available solar.
   target:
     device:
-      integration: eleven_energy
+      integration: eleven_energy_plus
   response:
     optional: true
   fields:
@@ -196,6 +196,6 @@ set_work_mode_reset:
   description: Resets the work mode based on system configuration or schedules.
   target:
     device:
-      integration: eleven_energy
+      integration: eleven_energy_plus
   response:
     optional: true

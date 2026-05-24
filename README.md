@@ -1,8 +1,20 @@
-# Home Assistant Eleven Energy integration
+# Home Assistant Eleven Energy Plus integration
 
 <a href="https://www.elevenenergy.co.uk"><img src="https://brands.home-assistant.io/eleven_energy/dark_logo.png" width="300px" alt="Eleven Energy website"/></a>
 
-Connects to your Eleven Energy site ( cloud connection ) and obtains live stats from your inverter every 15 seconds by default (configurable from 5 to 300 seconds). It also allows changing of the hybrid work mode through service calls.
+Connects to your Eleven Energy site (cloud connection) and obtains live stats from your inverter every 15 seconds by default (configurable from 5 to 300 seconds). It also allows changing of the hybrid work mode through service calls.
+
+**Eleven Energy Plus** is the community-maintained fork of the original [`iPeel/HA-Eleven-Energy`](https://github.com/iPeel/HA-Eleven-Energy) integration. The HA integration domain is `eleven_energy_plus` (the original is `eleven_energy`), so the two HACS repositories install into different `custom_components/` folders and can coexist on the same Home Assistant instance.
+
+| | Original | This fork |
+| --- | --- | --- |
+| HACS name | "Eleven Energy" | **"Eleven Energy Plus"** |
+| Repository | `iPeel/HA-Eleven-Energy` | `goglecm/HA-Eleven-Energy` |
+| Integration domain | `eleven_energy` | **`eleven_energy_plus`** |
+| Filesystem path | `custom_components/eleven_energy/` | **`custom_components/eleven_energy_plus/`** |
+| Service prefix | `eleven_energy.set_work_mode_*` | **`eleven_energy_plus.set_work_mode_*`** |
+
+> If you previously installed the original integration, switching to the fork is a *replace*, not an in-place upgrade. Entities, automations and dashboards from the original will not carry over - you will need to remove the original integration, install Eleven Energy Plus, re-add the API token, and rewrite any automations using the new `eleven_energy_plus.*` service names.
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg?style=for-the-badge)](https://github.com/goglecm/HA-Eleven-Energy)
 ![Project Maintenance][maintenance-shield]
@@ -13,14 +25,14 @@ Connects to your Eleven Energy site ( cloud connection ) and obtains live stats 
 
 ## Installation
 
-To use, add this repository through HACS and install the Eleven Energy Integration. You require HACS to be installed, follow the guide at [the HACS download site](https://www.hacs.xyz/docs/use/download/download/) for more details.
+To use, add this repository through HACS and install the Eleven Energy Plus integration. You require HACS to be installed, follow the guide at [the HACS download site](https://www.hacs.xyz/docs/use/download/download/) for more details.
 
 Once HACS is installed on your system:
 
-* [Add the Eleven Energy repository](https://my.home-assistant.io/redirect/hacs_repository/?owner=goglecm&repository=HA-Eleven-Energy&category=integration) to your HACS installation
+* [Add the Eleven Energy Plus repository](https://my.home-assistant.io/redirect/hacs_repository/?owner=goglecm&repository=HA-Eleven-Energy&category=integration) to your HACS installation
 * Click `Download`
 
-You will also need an API token obtained through the Site & System Settings page of the Eleven Energy app. Once you have a token, from the Devices page in Home Assistant, add an integration, choose "Eleven Energy" and add your API token when requested.
+You will also need an API token obtained through the Site & System Settings page of the Eleven Energy app. Once you have a token, from the Devices page in Home Assistant, add an integration, choose **"Eleven Energy Plus"** and add your API token when requested.
 
 ## Update Interval
 
@@ -103,7 +115,7 @@ Each action may require parameters as specified below, to use a parameter, add i
 Every `set_work_mode_*` service supports an optional response (`supports_response: optional`) so automations can branch on the outcome. Capture it with `response_variable:`:
 
 ```yaml
-- action: eleven_energy.set_work_mode_force_charge
+- action: eleven_energy_plus.set_work_mode_force_charge
   target:
     device_id: !input inverter_device
   data:
@@ -214,7 +226,7 @@ Add the following to your `configuration.yaml` (or use **Settings -> Devices & S
 logger:
   default: warning
   logs:
-    custom_components.eleven_energy: debug
+    custom_components.eleven_energy_plus: debug
 ```
 
 The first device payload received per Home Assistant process is logged once at `DEBUG`, truncated to 2000 characters. This is the most useful artefact to attach to a bug report when an entity isn't appearing or has the wrong unit.
@@ -252,7 +264,7 @@ python3 -m venv .venv
 To see a coverage report:
 
 ```bash
-.venv/bin/pytest tests/ --cov=custom_components/eleven_energy --cov-report=term-missing
+.venv/bin/pytest tests/ --cov=custom_components/eleven_energy_plus --cov-report=term-missing
 ```
 
 The test suite uses [`pytest-homeassistant-custom-component`](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) and runs entirely against an in-process Home Assistant instance with mocked aiohttp - no real network access is needed.

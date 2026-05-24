@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.eleven_energy.controller import (
+from custom_components.eleven_energy_plus.controller import (
     _clamp_minutes,
     _clamp_percent,
     _clamp_power_kw,
     _coerce_bool,
 )
-from custom_components.eleven_energy.hybrid_inverter import (
+from custom_components.eleven_energy_plus.hybrid_inverter import (
     _humanise_path,
     _infer_meta,
 )

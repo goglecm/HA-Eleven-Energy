@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
-# Make ``custom_components.eleven_energy`` importable as a top-level package so
-# pytest-homeassistant-custom-component picks it up via its custom integration
-# loader.
+# Make ``custom_components.eleven_energy_plus`` importable as a top-level
+# package so pytest-homeassistant-custom-component picks it up via its custom
+# integration loader.
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -32,6 +32,6 @@ def auto_enable_custom_integrations(
 def patch_send_post() -> Generator[patch, None, None]:
     """Patch :meth:`Controller.send_reliable_post` so tests don't hit aiohttp."""
     with patch(
-        "custom_components.eleven_energy.controller.Controller.send_reliable_post"
+        "custom_components.eleven_energy_plus.controller.Controller.send_reliable_post"
     ) as mock:
         yield mock

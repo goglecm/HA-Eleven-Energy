@@ -12,7 +12,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
 )
 
-from custom_components.eleven_energy.const import (
+from custom_components.eleven_energy_plus.const import (
     BASE_URL,
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL_SECONDS,
@@ -46,7 +46,7 @@ class TestConfigFlow:
             result["flow_id"], {"token": "valid-token"}
         )
         assert result["type"] is FlowResultType.CREATE_ENTRY
-        assert result["title"] == "Eleven Energy"
+        assert result["title"] == "Eleven Energy Plus"
         assert result["data"] == {"token": "valid-token"}
         assert result["options"] == {
             CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL_SECONDS

@@ -1,4 +1,4 @@
-"""Tests for the :mod:`custom_components.eleven_energy.controller` module."""
+"""Tests for the :mod:`custom_components.eleven_energy_plus.controller` module."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
 )
 
-from custom_components.eleven_energy.const import BASE_URL, DOMAIN
-from custom_components.eleven_energy.controller import Controller, PostResult
+from custom_components.eleven_energy_plus.const import BASE_URL, DOMAIN
+from custom_components.eleven_energy_plus.controller import Controller, PostResult
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ def instant_backoff(monkeypatch: pytest.MonkeyPatch):
         raise asyncio.TimeoutError
 
     monkeypatch.setattr(
-        "custom_components.eleven_energy.controller.asyncio.wait_for",
+        "custom_components.eleven_energy_plus.controller.asyncio.wait_for",
         _instant_timeout,
     )
     return _instant_timeout
@@ -112,7 +112,7 @@ class TestSendReliablePost:
             controller._terminated = True
 
         monkeypatch.setattr(
-            "custom_components.eleven_energy.controller.asyncio.wait_for",
+            "custom_components.eleven_energy_plus.controller.asyncio.wait_for",
             _wait_and_terminate,
         )
 
@@ -144,7 +144,7 @@ class TestSetWorkMode:
             "set_work_mode_self_consumption", {}
         )
         assert result["success"] is False
-        assert result["error"] == "no Eleven Energy device available"
+        assert result["error"] == "no Eleven Energy Plus device available"
 
     async def test_missing_required_field_returns_error(
         self, controller: Controller
@@ -303,7 +303,11 @@ class TestPollSite:
         assert await controller.poll_site() is True
         assert "x" in controller.devices
         info = controller.devices["x"].device_info
-        assert info["name"] == "Eleven Energy Eleven Energy"
+        # When the API returns ``null`` for ``name``, the controller falls
+        # back to the generic ``"Inverter"`` placeholder so the device card
+        # reads "Eleven Energy Plus Inverter" rather than the brand-doubled
+        # "Eleven Energy Plus Eleven Energy".
+        assert info["name"] == "Eleven Energy Plus Inverter"
         assert info["serial_number"] == ""
 
     async def test_non_hybrid_devices_skipped(
@@ -433,7 +437,7 @@ class TestPollDevices:
         controller: Controller,
         aioclient_mock: AiohttpClientMocker,
     ) -> None:
-        from custom_components.eleven_energy.hybrid_inverter import HybridInverter
+        from custom_components.eleven_energy_plus.hybrid_inverter import HybridInverter
 
         controller.devices["abc"] = HybridInverter(
             controller.hass, controller, "abc", "Inverter", "SN"
@@ -456,7 +460,7 @@ class TestPollDevices:
         controller: Controller,
         aioclient_mock: AiohttpClientMocker,
     ) -> None:
-        from custom_components.eleven_energy.hybrid_inverter import HybridInverter
+        from custom_components.eleven_energy_plus.hybrid_inverter import HybridInverter
 
         controller.devices["bad"] = HybridInverter(
             controller.hass, controller, "bad", "Bad", "SN-1"

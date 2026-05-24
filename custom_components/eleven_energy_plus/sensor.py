@@ -1,9 +1,9 @@
-"""Eleven Energy ``sensor`` platform.
+"""Eleven Energy Plus ``sensor`` platform.
 
 This module is a thin shim that wires Home Assistant's ``sensor`` platform up
-to the central :class:`~custom_components.eleven_energy.controller.Controller`.
+to the central :class:`~custom_components.eleven_energy_plus.controller.Controller`.
 The interesting logic - both predefined and auto-discovered entities - lives
-in :mod:`custom_components.eleven_energy.hybrid_inverter`.
+in :mod:`custom_components.eleven_energy_plus.hybrid_inverter`.
 
 Two-stage entity registration:
 

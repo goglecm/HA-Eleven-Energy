@@ -467,8 +467,10 @@ class HybridInverter:
             element of ``DeviceInfo.identifiers`` so device-targeted services
             can map back to us.
         :param device_name: User-visible model/name string from the API. We
-            prefix it with ``"Eleven Energy "`` so multi-vendor sites show
-            the brand in the HA UI.
+            prefix it with ``"Eleven Energy Plus "`` so multi-vendor sites
+            show the integration brand in the HA UI *and* the fork's device
+            cards are visually distinct from the original integration's, in
+            case both are installed side by side.
         :param device_serial_number: Inverter serial; surfaced on the HA
             device card.
         """
@@ -476,7 +478,7 @@ class HybridInverter:
         self.device_id = device_id
         self.device_info = DeviceInfo(
             identifiers={(DOMAIN, self.device_id)},
-            name=f"Eleven Energy {device_name}",
+            name=f"Eleven Energy Plus {device_name}",
             manufacturer="Eleven Energy",
             model=device_name,
             serial_number=device_serial_number,
@@ -576,7 +578,7 @@ class HybridInverter:
                     self._walk(sub_value, sub_path)
                 except Exception:  # noqa: BLE001
                     _LOGGER.warning(
-                        "Eleven Energy failed walking %s for device %s",
+                        "Eleven Energy Plus failed walking %s for device %s",
                         sub_path,
                         self.device_id,
                         exc_info=True,
@@ -594,14 +596,14 @@ class HybridInverter:
                     self._walk(item, sub_path)
                 except Exception:  # noqa: BLE001
                     _LOGGER.warning(
-                        "Eleven Energy failed walking %s for device %s",
+                        "Eleven Energy Plus failed walking %s for device %s",
                         sub_path,
                         self.device_id,
                         exc_info=True,
                     )
             if truncated and path not in self._truncated_list_paths:
                 _LOGGER.warning(
-                    "Eleven Energy truncated list %s at %d entries for device %s",
+                    "Eleven Energy Plus truncated list %s at %d entries for device %s",
                     path,
                     _MAX_LIST_EXPANSION,
                     self.device_id,
@@ -614,7 +616,7 @@ class HybridInverter:
             self._handle_leaf(path, value)
         except Exception:  # noqa: BLE001
             _LOGGER.warning(
-                "Eleven Energy failed handling leaf %s for device %s",
+                "Eleven Energy Plus failed handling leaf %s for device %s",
                 path,
                 self.device_id,
                 exc_info=True,
@@ -654,7 +656,7 @@ class HybridInverter:
             return
 
         _LOGGER.info(
-            "Eleven Energy auto-discovered %s entity for %s",
+            "Eleven Energy Plus auto-discovered %s entity for %s",
             meta.get("kind"),
             path,
         )

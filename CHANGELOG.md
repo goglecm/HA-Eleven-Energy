@@ -1,9 +1,54 @@
 # Changelog
 
-All notable changes to the Eleven Energy Home Assistant integration are
+All notable changes to the Eleven Energy Plus Home Assistant integration are
 captured here. Versions correspond to the `version` field in
-`custom_components/eleven_energy/manifest.json`, and the format roughly
+`custom_components/eleven_energy_plus/manifest.json`, and the format roughly
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## 1.5.0 - 2026-05-24
+
+### Breaking
+
+- **Integration renamed to Eleven Energy Plus.** The HA integration domain
+  is now `eleven_energy_plus` (was `eleven_energy`), the filesystem path is
+  now `custom_components/eleven_energy_plus/`, and the HACS display name
+  is "Eleven Energy Plus". This is what lets the fork install side-by-side
+  with the original, unmaintained
+  [`iPeel/HA-Eleven-Energy`](https://github.com/iPeel/HA-Eleven-Energy)
+  HACS repository without colliding on filesystem path, registry
+  namespace or service prefixes.
+- **Service prefix change.** All work-mode services are now reachable as
+  `eleven_energy_plus.set_work_mode_*` (was `eleven_energy.set_work_mode_*`).
+  Existing automations targeting the original integration will not carry
+  over and must be updated.
+- **Config entry / device card renames.** New config entries are titled
+  "Eleven Energy Plus" and inverter device cards read
+  "Eleven Energy Plus {device_name}" (was "Eleven Energy {device_name}").
+  The hardware `manufacturer` remains "Eleven Energy" - that hasn't
+  changed.
+- **No registry migration is performed.** Users moving from the original
+  integration need to remove it, install Eleven Energy Plus, re-add the
+  API token, and rewrite any automations / dashboards. Coexistence is
+  supported but no automatic data transfer.
+
+### Fixed
+
+- Null `name` from the site API previously produced a brand-doubled
+  device card ("Eleven Energy Eleven Energy"). The fallback is now the
+  generic placeholder "Inverter", yielding the sensible
+  "Eleven Energy Plus Inverter".
+- Dropped the no-longer-reachable 1.2->1.3 legacy entity migration
+  helper; under the new domain there is nothing to migrate from.
+
+### Changed
+
+- `manifest.json` version bumped to 1.5.0.
+- Log messages, error strings and the background task name now use the
+  "Eleven Energy Plus" brand so they're easy to grep for separately
+  from the original integration's output.
+- `services.yaml` `target.device.integration` switched to
+  `eleven_energy_plus`, so device-targeted service calls filter the
+  device picker to the fork's devices.
 
 ## 1.4.0 - 2026-05-24
 

@@ -1,4 +1,4 @@
-"""Constants for the Eleven Energy integration.
+"""Constants for the Eleven Energy Plus integration.
 
 This module is the single source of truth for everything that needs to be
 shared across the package - the integration ``DOMAIN`` slug, the list of
@@ -11,7 +11,12 @@ from homeassistant.const import Platform
 
 # Home Assistant integration domain. Must match the directory name under
 # ``custom_components/`` and the ``domain`` field in ``manifest.json``.
-DOMAIN = "eleven_energy"
+#
+# This fork uses ``eleven_energy_plus`` rather than ``eleven_energy`` so it can
+# be installed side-by-side with the original (unmaintained) ``iPeel`` HACS
+# repository without colliding on filesystem path, HA entity registry
+# namespace, or service prefixes.
+DOMAIN = "eleven_energy_plus"
 
 # Platforms Home Assistant forwards ``async_setup_entry`` to. The order is
 # significant only insofar as ``Controller.complete_platform_setup`` waits for

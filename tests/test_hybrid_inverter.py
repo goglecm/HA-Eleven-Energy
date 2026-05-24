@@ -1,4 +1,4 @@
-"""Tests for the :mod:`custom_components.eleven_energy.hybrid_inverter` module."""
+"""Tests for the :mod:`custom_components.eleven_energy_plus.hybrid_inverter` module."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 
 from homeassistant.core import HomeAssistant
 
-from custom_components.eleven_energy.hybrid_inverter import (
+from custom_components.eleven_energy_plus.hybrid_inverter import (
     _MAX_LIST_EXPANSION,
     HybridInverter,
     InverterSensorEntity,
@@ -47,8 +47,12 @@ class TestPredefinedEntities:
     def test_device_info_uses_provided_name_and_serial(
         self, inverter: HybridInverter
     ) -> None:
-        assert inverter.device_info["name"] == "Eleven Energy Hybrid"
+        assert inverter.device_info["name"] == "Eleven Energy Plus Hybrid"
         assert inverter.device_info["serial_number"] == "SN-1"
+        # Manufacturer keeps the upstream brand even on the fork - the
+        # hardware vendor hasn't changed, only the integration we use to
+        # talk to it.
+        assert inverter.device_info["manufacturer"] == "Eleven Energy"
 
 
 class TestWalkLeafRouting:
@@ -151,7 +155,8 @@ class TestLeafIsolation:
         monkeypatch.setattr(InverterSensorEntity, "set_native_value", patched)
 
         caplog.set_level(
-            logging.WARNING, logger="custom_components.eleven_energy.hybrid_inverter"
+            logging.WARNING,
+            logger="custom_components.eleven_energy_plus.hybrid_inverter",
         )
         inverter.update({"pv": {"power": 5}})
 
@@ -185,7 +190,8 @@ class TestListWalking:
     ) -> None:
         oversized = [{"v": i} for i in range(_MAX_LIST_EXPANSION + 5)]
         caplog.set_level(
-            logging.WARNING, logger="custom_components.eleven_energy.hybrid_inverter"
+            logging.WARNING,
+            logger="custom_components.eleven_energy_plus.hybrid_inverter",
         )
         inverter.update({"items": oversized})
 

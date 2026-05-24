@@ -1,4 +1,4 @@
-"""Eleven Energy ``number`` platform.
+"""Eleven Energy Plus ``number`` platform.
 
 Currently exposes a single, per-inverter "Update Interval" Number entity
 (:class:`PollIntervalNumber`) so the user can change how often the
@@ -72,7 +72,7 @@ class PollIntervalNumber(NumberEntity):
     """User-settable poll-interval entity for an inverter.
 
     Bounds, step and unit are pulled from
-    :mod:`custom_components.eleven_energy.const` so the Number entity, the
+    :mod:`custom_components.eleven_energy_plus.const` so the Number entity, the
     OptionsFlow slider and the controller all enforce the same range
     (5-300 seconds in 5-second steps).
     """

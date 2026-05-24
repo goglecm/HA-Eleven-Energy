@@ -1,6 +1,6 @@
-"""Eleven Energy ``binary_sensor`` platform.
+"""Eleven Energy Plus ``binary_sensor`` platform.
 
-Mirror of :mod:`custom_components.eleven_energy.sensor` for boolean values.
+Mirror of :mod:`custom_components.eleven_energy_plus.sensor` for boolean values.
 Predefined binary sensors (currently just the ``Online`` connectivity entity)
 are registered up front; the controller's add-entities callback is stashed so
 auto-discovered binary fields (anything :func:`_infer_meta` identifies as a
