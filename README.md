@@ -230,6 +230,17 @@ To trigger a reset, use the "_set_work_mode_reset_" service call with no paramet
 
 ## Troubleshooting
 
+### Download diagnostics (recommended)
+
+Eleven Energy Plus implements Home Assistant's standard **Diagnostics** platform. From **Settings -> Devices & Services -> Eleven Energy Plus**, click the three-dot menu next to the integration and choose **Download diagnostics**. You get a JSON file containing:
+
+* the integration's version + domain,
+* the entry's data and options (with the API token redacted),
+* the live controller state (poll interval, device-label override, count of known devices, registered platforms), and
+* the most recent raw `/api/v1/site` payload and the most recent raw `/api/v1/devices/<id>` payload per device.
+
+Serial numbers and device ids are redacted before the file is written, so it is safe to attach to a public bug report. This is the recommended way to share troubleshooting data - it doesn't require enabling debug logging and captures everything the integration sees from the upstream API.
+
 ### Turning on debug logging
 
 Add the following to your `configuration.yaml` (or use **Settings -> Devices & Services -> Eleven Energy -> Enable debug logging**) and restart Home Assistant:
@@ -257,10 +268,11 @@ The first device payload received per Home Assistant process is logged once at `
 
 Useful information to include:
 
-1. Integration version (from **Settings -> Devices & Services -> Eleven Energy**).
-2. Home Assistant version.
-3. A debug-level log snippet covering at least one full poll cycle.
-4. The truncated first-payload line from the logs (search for `first device payload`).
+1. A diagnostics download (see [Download diagnostics](#download-diagnostics-recommended) above) - this is by far the most useful single artefact and supersedes points 3-4 below in most cases.
+2. Integration version (from **Settings -> Devices & Services -> Eleven Energy Plus**).
+3. Home Assistant version.
+4. A debug-level log snippet covering at least one full poll cycle (only if the diagnostics download isn't enough).
+5. The INFO line logged on first discovery (search for `discovered inverter`).
 
 
 ## Development / Testing

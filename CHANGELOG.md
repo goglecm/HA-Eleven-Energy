@@ -56,6 +56,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `model` -> `productName` -> `inverterModel` in order before falling
   back to the generic "Inverter" placeholder. Installations with a
   populated `name` see no behaviour change.
+- **HA Diagnostics platform.** A new `diagnostics.py` module
+  implements Home Assistant's standard *Download diagnostics* button
+  on the integration card. The dump captures the integration version,
+  the config-entry data + options, the live controller state
+  (poll interval, device-label override, count of known devices,
+  registered platforms) and the most recent raw `/api/v1/site` and
+  `/api/v1/devices/<id>` payloads. The API bearer token, device ids
+  and serial numbers are redacted before the file is written, so the
+  download is safe to attach to a public bug report. This replaces
+  the first-discovery log line as the recommended way for users to
+  share troubleshooting data when investigating a mislabelled
+  inverter or unmapped API field.
 
 ### Fixed
 

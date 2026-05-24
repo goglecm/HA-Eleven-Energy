@@ -209,6 +209,17 @@ class Controller:
         # Debug breadcrumb: we log the first device payload once per process
         # to help users (and us) understand the API's shape on their site.
         self._logged_first_payload = False
+        # Most recent raw API payloads, retained verbatim for the HA
+        # Diagnostics platform (``diagnostics.py``). These let users hand us
+        # a redacted dump from the integration card instead of having to
+        # tail ``home-assistant.log``. They are *not* used for normal
+        # operation - the controller's state lives in :attr:`devices` and
+        # each :class:`HybridInverter` - so leaving them at ``None`` /
+        # empty until the first successful poll is intentional. ``None``
+        # also lets the diagnostics view distinguish "never polled" from
+        # "polled and received an empty dict".
+        self._last_site_payload: dict[str, Any] | None = None
+        self._last_device_payloads: dict[str, dict[str, Any]] = {}
         # Snapshot of the device-label override active at construction time.
         # Used by ``_async_options_updated`` to decide whether the override
         # has actually changed, since :attr:`device_label_override` always
@@ -664,6 +675,11 @@ class Controller:
                 )
                 continue
 
+            # Retain the raw payload for the Diagnostics platform. We
+            # deliberately store only the *most recent* successful poll
+            # per device to bound memory.
+            self._last_device_payloads[device.device_id] = payload
+
             if not self._logged_first_payload:
                 rendered = repr(payload)
                 if len(rendered) > _PAYLOAD_LOG_LIMIT:
@@ -719,6 +735,9 @@ class Controller:
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Eleven Energy Plus site poll failed")
             return False
+
+        # Retain the raw site payload for the Diagnostics platform.
+        self._last_site_payload = payload
 
         for device in payload.get("devices", []):
             device_id = device.get("deviceId")
