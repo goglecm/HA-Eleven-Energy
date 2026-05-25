@@ -108,6 +108,17 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   <https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api>),
   so shipping the images directly inside the integration directory is
   now the supported path.
+- **Minimum Home Assistant version: 2026.3.0.** `hacs.json` now
+  declares `"homeassistant": "2026.3.0"` so HACS refuses to install
+  or update Eleven Energy Plus on older Home Assistant releases. The
+  constraint follows from the local `brand/` directory above: on
+  HA < 2026.3 the Brands Proxy API hasn't been wired up yet and the
+  brand images silently no-op (placeholder icon, no functional
+  error), but gating at install time spares users from a partly-
+  broken integration. Users who copy the integration into
+  `custom_components/` manually (bypassing HACS) are not gated and
+  will just see the placeholder icon on older HA. Eleven Energy
+  Plus's Python code itself does not require any 2026.3-only API.
 
 ## 1.4.0 - 2026-05-24
 
