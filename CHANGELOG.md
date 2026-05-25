@@ -88,6 +88,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `eleven_energy_plus`, so device-targeted service calls filter the
   device picker to the fork's devices.
 
+### Branding
+
+- **Local integration brand images at
+  `custom_components/eleven_energy_plus/brand/`.** Added `icon.png`
+  (256x256), `icon@2x.png` (512x512), `logo.png` (925x256),
+  `logo@2x.png` (1850x512), `dark_logo.png` and `dark_logo@2x.png` so
+  the Home Assistant UI shows the proper Eleven Energy artwork on the
+  integration card under the new `eleven_energy_plus` domain instead
+  of a placeholder. The artwork is reused verbatim from the original
+  `eleven_energy` entry in
+  [`home-assistant/brands`](https://github.com/home-assistant/brands)
+  since both integrations target the same hardware vendor. The PR
+  route into `home-assistant/brands` is no longer available - that
+  repository's
+  `close-new-custom-integrations.yml` workflow auto-closes any new
+  `custom_integrations/` PR since Home Assistant 2026.3 introduced
+  local brand image support for custom integrations (see
+  <https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api>),
+  so shipping the images directly inside the integration directory is
+  now the supported path.
+
 ## 1.4.0 - 2026-05-24
 
 ### Added

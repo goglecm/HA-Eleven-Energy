@@ -294,6 +294,11 @@ To see a coverage report:
 The test suite uses [`pytest-homeassistant-custom-component`](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) and runs entirely against an in-process Home Assistant instance with mocked aiohttp - no real network access is needed.
 
 
+## Branding / icon
+
+The Home Assistant integration card icon and logo for Eleven Energy Plus are shipped directly inside this repository at `custom_components/eleven_energy_plus/brand/` (`icon.png`, `icon@2x.png`, `logo.png`, `logo@2x.png`, `dark_logo.png`, `dark_logo@2x.png`). Since Home Assistant 2026.3, custom integrations serve their own brand images through HA's local brands proxy API rather than the [`home-assistant/brands`](https://github.com/home-assistant/brands) CDN, so no upstream PR is required - and in fact the brands repository's CI now auto-closes any new `custom_integrations/` submissions (see the [Brands Proxy API announcement](https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api)). The artwork is reused verbatim from the original `eleven_energy` entry in the brands repository, since both integrations target the same Eleven Energy hardware.
+
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for a per-version summary of features, behaviour changes and bug fixes.
