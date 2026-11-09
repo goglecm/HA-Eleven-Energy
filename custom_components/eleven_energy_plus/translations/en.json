@@ -1,32 +1,87 @@
 {
     "config": {
         "abort": {
-            "already_configured": "Device is already configured",
-            "already_setup": "Only one Eleven Energy Plus site can be configured. Use the existing entry's Configure button to change the token or update interval."
+            "already_configured": "Eleven Energy Plus is already configured.",
+            "single_instance_allowed": "Only one Eleven Energy Plus site can be configured. Use the existing entry's Reconfigure or Configure options instead.",
+            "reauth_successful": "Eleven Energy Plus is reconnected.",
+            "reconfigure_successful": "Eleven Energy Plus now uses the new connection.",
+            "missing_configuration": "The Eleven Energy sign-in is not available. Restart Home Assistant and try again, or use an API token.",
+            "missing_credentials": "The Eleven Energy sign-in is not available. Use an API token instead.",
+            "authorize_url_timeout": "Timed out preparing the Eleven Energy sign-in page.",
+            "no_url_available": "No URL is available for the sign-in redirect. See {docs_url}.",
+            "oauth_error": "Eleven Energy returned an invalid sign-in token.",
+            "oauth_failed": "Signing in to Eleven Energy failed.",
+            "oauth_timeout": "Timed out waiting for Eleven Energy to issue a sign-in token.",
+            "oauth_unauthorized": "Eleven Energy refused the sign-in.",
+            "oauth_implementation_unavailable": "The Eleven Energy sign-in is temporarily unavailable. Try again later, or use an API token.",
+            "user_rejected_authorize": "The Eleven Energy sign-in was declined: {error}"
+        },
+        "create_entry": {
+            "default": "Connected to Eleven Energy."
         },
         "error": {
-            "cannot_connect": "Failed to connect",
-            "invalid_auth": "Invalid authentication",
+            "cannot_connect": "Could not reach the Eleven Energy API. Check the connection and try again.",
+            "invalid_auth": "Eleven Energy did not accept this API token.",
             "unknown": "Unexpected error"
         },
         "step": {
             "user": {
+                "title": "Eleven Energy Plus",
+                "description": "Sign in with your Eleven Energy account, or set up with an API token.",
+                "menu_options": {
+                    "pick_implementation": "Sign in with an Eleven Energy account",
+                    "token": "Use an API token"
+                }
+            },
+            "token": {
+                "title": "API token",
+                "description": "Create a token in the Eleven Energy app under Site & System Settings, Access, Add Access.",
                 "data": {
-                    "token": "API Token"
+                    "token": "API token"
+                },
+                "data_description": {
+                    "token": "The token is checked with Eleven Energy before it is saved."
+                }
+            },
+            "pick_implementation": {
+                "title": "Sign in with Eleven Energy"
+            },
+            "reauth_account": {
+                "title": "Sign in to Eleven Energy again",
+                "description": "Eleven Energy no longer accepts this integration's sign-in; it may have been withdrawn from the Eleven Energy app. Sign in again to reconnect. Your devices, entities and history are kept."
+            },
+            "reauth_confirm": {
+                "title": "Enter a new API token",
+                "description": "Eleven Energy no longer accepts the stored API token. It may have been revoked from the Eleven Energy app, or lapsed after 90 days without being used. Create a new one under Site & System Settings, Access, Add Access. Your devices, entities and history are kept.",
+                "data": {
+                    "token": "API token"
+                }
+            },
+            "reconfigure": {
+                "title": "Change how Eleven Energy Plus connects",
+                "description": "Your devices, entities and history are kept - only the way Home Assistant authenticates changes.",
+                "menu_options": {
+                    "pick_implementation": "Sign in with an Eleven Energy account",
+                    "token": "Use an API token"
                 }
             }
         }
     },
     "options": {
+        "error": {
+            "cannot_connect": "Could not reach the Eleven Energy API. Check the connection and try again.",
+            "invalid_auth": "Eleven Energy did not accept this API token.",
+            "unknown": "Unexpected error"
+        },
         "step": {
             "init": {
                 "data": {
-                    "token": "API Token",
                     "poll_interval_seconds": "Update interval (seconds)",
                     "device_label_override": "Device label override (optional)"
                 },
                 "data_description": {
-                    "device_label_override": "Leave blank to use the label the Eleven Energy site API returns. Set to override the device-card title and model (e.g. \"Mediterranean Sea 12\") when the upstream label is wrong. Changing this triggers an integration reload."
+                    "poll_interval_seconds": "How often inverter data is fetched. Applied immediately.",
+                    "device_label_override": "Leave blank to use the product name the Eleven Energy API reports. Set to override the device-card title and model. Changing this triggers an integration reload."
                 }
             }
         }
@@ -76,13 +131,13 @@
                 "name": "Work Mode",
                 "state": {
                     "selfconsumption": "Self Consumption",
-                    "forcecharge": "Force Charge",
+                    "forcecharge": "Grid Charge",
                     "gridexport": "Grid Export",
                     "idlebattery": "Idle Battery",
-                    "pvexportpriority": "PV Export Priority",
-                    "targetsoc": "Target State of Charge",
+                    "pvexportpriority": "Excess PV Export",
+                    "targetsoc": "Target State Of Charge",
                     "reset": "Reset"
-                    }
+                }
             },
             "firmware_version": {
                 "name": "Firmware Version"
@@ -95,7 +150,49 @@
                     "ready": "Powered Off",
                     "ongrid": "On Grid",
                     "offgrid": "Off Grid"
-                    }
+                }
+            },
+            "grid_phase_power": {
+                "name": "Grid Power {phase}"
+            },
+            "grid_phase_voltage": {
+                "name": "Grid Voltage {phase}"
+            },
+            "grid_phase_current": {
+                "name": "Grid Current {phase}"
+            },
+            "system_phase_power": {
+                "name": "System Power {phase}"
+            },
+            "system_phase_voltage": {
+                "name": "System Voltage {phase}"
+            },
+            "system_phase_current": {
+                "name": "System Current {phase}"
+            },
+            "mppt_power": {
+                "name": "MPPT {index} Power"
+            },
+            "mppt_voltage": {
+                "name": "MPPT {index} Voltage"
+            },
+            "mppt_current": {
+                "name": "MPPT {index} Current"
+            },
+            "battery_unit_raw_state_of_charge": {
+                "name": "Battery {index} Raw State Of Charge"
+            },
+            "battery_unit_power": {
+                "name": "Battery {index} Power"
+            },
+            "battery_unit_modules": {
+                "name": "Battery {index} Modules"
+            },
+            "rated_ac_power": {
+                "name": "Rated AC Power"
+            },
+            "rated_dc_power": {
+                "name": "Rated DC Power"
             }
         },
         "binary_sensor": {
@@ -108,6 +205,164 @@
                 "name": "Update Interval"
             }
         }
-
+    },
+    "exceptions": {
+        "not_loaded": {
+            "message": "Eleven Energy Plus is not loaded, so {service} cannot run."
+        },
+        "invalid_request": {
+            "message": "Eleven Energy Plus refused {service}: {error}."
+        },
+        "work_mode_failed": {
+            "message": "Eleven Energy Plus could not apply {service}: {error}."
+        }
+    },
+    "device_automation": {
+        "action_type": {
+            "self_consumption": "Self Consumption",
+            "force_charge": "Grid Charge",
+            "grid_export": "Grid Export",
+            "pv_export": "Excess PV Export",
+            "idle_battery": "Idle Battery",
+            "target_soc": "Target State Of Charge",
+            "reset": "Reset Work Mode"
+        },
+        "extra_fields": {
+            "percent_to_battery": "Percentage To Battery",
+            "target_power": "Target Power",
+            "target_percent": "Target SoC %",
+            "target_soc": "Target SoC %",
+            "target_minutes": "Target Minutes",
+            "max_charge_power": "Max Charge Power",
+            "max_discharge_power": "Max Discharge Power",
+            "allow_charging": "Allow Charging",
+            "allow_discharging": "Allow Discharging",
+            "include_excess_solar": "Add Surplus Solar",
+            "overdrive": "Overdrive"
+        }
+    },
+    "services": {
+        "set_work_mode_self_consumption": {
+            "name": "Self Consumption",
+            "description": "Solar covers the house, surplus charges the battery, and once it is full the surplus is exported. The battery makes up any shortfall. Setting any work mode switches the Eleven Energy optimiser off until Reset Work Mode is sent.",
+            "fields": {
+                "device_id": {
+                    "name": "Inverter",
+                    "description": "Which inverter to act on. Optional on a site with one inverter; on a site with more, a call without it is refused rather than guessed."
+                },
+                "percent_to_battery": {
+                    "name": "Percentage To Battery",
+                    "description": "How much of the surplus solar to store rather than export, as a percentage. Leave unset to store all of it."
+                }
+            }
+        },
+        "set_work_mode_force_charge": {
+            "name": "Grid Charge",
+            "description": "Charge the battery from the grid at a set power until it reaches a target. Once there, the house is supplied from the grid until the mode is changed. The Eleven Energy optimiser stays off until Reset Work Mode is sent.",
+            "fields": {
+                "device_id": {
+                    "name": "Inverter",
+                    "description": "Which inverter to act on. Optional on a site with one inverter; on a site with more, a call without it is refused rather than guessed."
+                },
+                "target_power": {
+                    "name": "Target Power",
+                    "description": "Battery charge power in kW. A lower rate may be used if the battery is current limited, such as at a low state of charge."
+                },
+                "target_percent": {
+                    "name": "Target SoC %",
+                    "description": "The state of charge to stop charging at."
+                }
+            }
+        },
+        "set_work_mode_grid_export": {
+            "name": "Grid Export",
+            "description": "Discharge the battery to the grid at a set power until it reaches a target. After that the house is still supplied from the battery, but surplus solar is exported rather than stored. The Eleven Energy optimiser stays off until Reset Work Mode is sent.",
+            "fields": {
+                "device_id": {
+                    "name": "Inverter",
+                    "description": "Which inverter to act on. Optional on a site with one inverter; on a site with more, a call without it is refused rather than guessed."
+                },
+                "target_power": {
+                    "name": "Target Power",
+                    "description": "Battery discharge power in kW. This is battery power, not power at the meter: with 1 kW of house load, 5 kW here puts about 4 kW on the grid."
+                },
+                "target_percent": {
+                    "name": "Target SoC %",
+                    "description": "The state of charge to stop discharging at."
+                },
+                "include_excess_solar": {
+                    "name": "Add Surplus Solar",
+                    "description": "Export surplus solar on top of the discharge power rather than storing it."
+                },
+                "overdrive": {
+                    "name": "Overdrive",
+                    "description": "Allow exceeding the usual export ceiling where the connection permits it. Leave off unless you have been told otherwise."
+                }
+            }
+        },
+        "set_work_mode_pv_export": {
+            "name": "Excess PV Export",
+            "description": "Like Self Consumption, but surplus solar is exported before it is stored. If more solar is available than can be exported, the remainder goes to the battery. The Eleven Energy optimiser stays off until Reset Work Mode is sent.",
+            "fields": {
+                "device_id": {
+                    "name": "Inverter",
+                    "description": "Which inverter to act on. Optional on a site with one inverter; on a site with more, a call without it is refused rather than guessed."
+                }
+            }
+        },
+        "set_work_mode_idle_battery": {
+            "name": "Idle Battery",
+            "description": "Hold the battery where it is. Charging and discharging can be allowed separately. The Eleven Energy optimiser stays off until Reset Work Mode is sent.",
+            "fields": {
+                "device_id": {
+                    "name": "Inverter",
+                    "description": "Which inverter to act on. Optional on a site with one inverter; on a site with more, a call without it is refused rather than guessed."
+                },
+                "allow_charging": {
+                    "name": "Allow Charging",
+                    "description": "Permit charging the battery from surplus solar."
+                },
+                "allow_discharging": {
+                    "name": "Allow Discharging",
+                    "description": "Permit discharging the battery to supply the house."
+                }
+            }
+        },
+        "set_work_mode_target_soc": {
+            "name": "Target State Of Charge",
+            "description": "Reach a target state of charge within a deadline, working out the rate from the house load as it goes. Once the target is reached the system runs in Excess PV Export until the mode is changed. The Eleven Energy optimiser stays off until Reset Work Mode is sent.",
+            "fields": {
+                "device_id": {
+                    "name": "Inverter",
+                    "description": "Which inverter to act on. Optional on a site with one inverter; on a site with more, a call without it is refused rather than guessed."
+                },
+                "target_soc": {
+                    "name": "Target SoC %",
+                    "description": "The state of charge to aim for."
+                },
+                "target_minutes": {
+                    "name": "Target Minutes",
+                    "description": "How long it has to get there, in whole minutes (1 to 1440)."
+                },
+                "max_charge_power": {
+                    "name": "Max Charge Power",
+                    "description": "A ceiling in kW while charging. A lower rate may be used; this is only a maximum."
+                },
+                "max_discharge_power": {
+                    "name": "Max Discharge Power",
+                    "description": "A ceiling in kW while discharging. A lower rate may be used; this is only a maximum."
+                }
+            }
+        },
+        "set_work_mode_reset": {
+            "name": "Reset Work Mode",
+            "description": "Hand control back to the system. If a schedule was in effect when the mode was changed it resumes, otherwise automatic operation does. Send this when your automation has finished - until you do, the Eleven Energy optimiser stays switched off.",
+            "fields": {
+                "device_id": {
+                    "name": "Inverter",
+                    "description": "Which inverter to act on. Optional on a site with one inverter; on a site with more, a call without it is refused rather than guessed."
+                }
+            }
+        }
     }
 }

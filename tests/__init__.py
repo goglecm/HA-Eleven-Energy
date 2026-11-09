@@ -1,1 +1,1 @@
-"""Test suite for the Eleven Energy Home Assistant integration."""
+"""Test suite for the Eleven Energy Plus Home Assistant integration."""

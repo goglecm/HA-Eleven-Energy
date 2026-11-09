@@ -1,35 +1,50 @@
 """Config flow + Options flow for the Eleven Energy Plus integration.
 
-Two related flows live here:
+Setup offers two ways in (a menu):
 
-* :class:`ConfigFlow` - the initial UI-driven setup. The user supplies an API
-  token; we hit the site endpoint once to verify it, distinguishing 401/403
-  (``invalid_auth``) from any other failure (``cannot_connect``), and bail
-  out if an Eleven Energy Plus entry already exists so users can't
-  accidentally register the same site twice.
-* :class:`OptionsFlowHandler` - the "Configure" button on the integration
-  page. Lets the user update the token and the poll interval. The token is
-  validated against the API again before being persisted, and the integer
-  interval is clamped server-side as a belt-and-braces fallback even though
-  the slider already enforces the bounds.
+* **Sign in with an Eleven Energy account** (``pick_implementation``): an
+  OAuth2 + PKCE flow against Eleven Energy's own sign-in page (see
+  :mod:`.oauth`). Home Assistant never handles a credential the user typed,
+  the token is scoped to one site and can be withdrawn from the Eleven
+  Energy app, and Home Assistant refreshes it automatically.
+* **Use an API token** (``token``): paste a token created in the Eleven
+  Energy app. Right for headless setups, and what every installation before
+  2.0 uses. The token is checked against the API before it is stored,
+  telling a rejected token (401/403, ``invalid_auth``) apart from an
+  unreachable API (``cannot_connect``).
 
-Both flows share :func:`_check_token`, which uses a tight 15-second timeout
-so the UI doesn't appear hung while we wait on the upstream API.
+The same menu is offered by **Reconfigure**, so an existing installation can
+move between the two without losing its devices, entities or history, and
+**reauthentication** asks for whichever kind of credential the entry uses.
+Both replace the entry's data wholesale (so an entry never carries both kinds
+of credential) and then schedule a reload themselves; the integration's
+update listener deliberately ignores credential changes, so there is never a
+second reload racing the first.
+
+The Options flow covers only what is safe to change live: the poll interval
+and the device-label override. Only one Eleven Energy Plus entry is
+supported (``single_config_entry`` in the manifest).
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import logging
 from typing import Any
 
 import aiohttp
 import voluptuous as vol
 
-from homeassistant import config_entries
-from homeassistant.config_entries import ConfigEntry, OptionsFlow
+from homeassistant.config_entries import (
+    SOURCE_REAUTH,
+    SOURCE_RECONFIGURE,
+    ConfigEntry,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     NumberSelector,
@@ -37,27 +52,35 @@ from homeassistant.helpers.selector import (
     NumberSelectorMode,
     TextSelector,
     TextSelectorConfig,
+    TextSelectorType,
 )
 
 from .const import (
     BASE_URL,
+    CONF_AUTH_IMPLEMENTATION,
     CONF_DEVICE_LABEL,
     CONF_POLL_INTERVAL,
+    CONF_TOKEN,
     DEFAULT_POLL_INTERVAL_SECONDS,
     DOMAIN,
     MAX_POLL_INTERVAL_SECONDS,
     MIN_POLL_INTERVAL_SECONDS,
     POLL_INTERVAL_STEP_SECONDS,
 )
+from .oauth import async_register_implementation
 
 _LOGGER = logging.getLogger(__name__)
+
+ENTRY_TITLE = "Eleven Energy Plus"
 
 # Tight timeout: the user is sitting in front of a form waiting for this.
 _CONFIG_FLOW_TIMEOUT = aiohttp.ClientTimeout(total=15, connect=10)
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
+_TOKEN_SCHEMA = vol.Schema(
     {
-        vol.Required("token", description="API Token"): str,
+        vol.Required(CONF_TOKEN): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        ),
     }
 )
 
@@ -71,11 +94,13 @@ class InvalidAuth(HomeAssistantError):
 
 
 async def _check_token(hass: HomeAssistant, token: str) -> None:
-    """Verify the API token by making a single site request.
+    """Ask the API whether it accepts ``token``, and say why when it does not.
 
-    Raises :class:`InvalidAuth` for 401/403 responses and :class:`CannotConnect`
-    for any other failure (timeout, DNS, 5xx, etc.) so the user sees the right
-    error string in the config flow instead of a generic "cannot connect".
+    Raises :class:`InvalidAuth` for 401/403 and :class:`CannotConnect` for a
+    timeout, a transport failure or any other non-200 status. Anything not
+    anticipated propagates, so the flow logs it with its traceback and
+    reports ``unknown`` instead of hiding the evidence behind "cannot
+    connect".
     """
     session = async_get_clientsession(hass)
     headers = {
@@ -92,70 +117,150 @@ async def _check_token(hass: HomeAssistant, token: str) -> None:
                 raise InvalidAuth
             if resp.status != 200:
                 raise CannotConnect
-    except (InvalidAuth, CannotConnect):
-        raise
-    except Exception as err:  # noqa: BLE001
-        _LOGGER.debug("Eleven Energy Plus token check raised %s", err)
+    except (aiohttp.ClientError, TimeoutError) as err:
+        _LOGGER.debug("Eleven Energy Plus token check failed: %r", err)
         raise CannotConnect from err
 
 
-async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate the user-supplied token by making a probe API call.
+async def _async_token_errors(hass: HomeAssistant, token: str) -> dict[str, str]:
+    """Validate ``token`` and return the form errors (empty when it works)."""
+    if not token:
+        return {"base": "invalid_auth"}
+    try:
+        await _check_token(hass, token)
+    except InvalidAuth:
+        return {"base": "invalid_auth"}
+    except CannotConnect:
+        return {"base": "cannot_connect"}
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Unexpected exception validating the Eleven Energy token")
+        return {"base": "unknown"}
+    return {}
 
-    Returns the dict the caller passes to :meth:`ConfigFlow.async_create_entry`
-    when validation succeeds. Raises :class:`InvalidAuth` for 401/403 and
-    :class:`CannotConnect` for any other failure.
-    """
-    await _check_token(hass, data["token"])
-    return {"title": "Eleven Energy Plus"}
+
+def _default_options() -> dict[str, Any]:
+    return {CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL_SECONDS}
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle the initial setup flow for Eleven Energy Plus.
+class ConfigFlow(
+    config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN
+):
+    """Handle setup, reconfiguration and reauthentication for Eleven Energy Plus."""
 
-    Only a single Eleven Energy Plus site is supported per Home Assistant
-    instance; a second attempt is aborted with the ``already_setup`` reason.
-    On success the new entry is created with the default poll interval in
-    ``options`` so the Number entity and OptionsFlow have something sensible
-    to read on the first start.
-    """
-
+    DOMAIN = DOMAIN
     VERSION = 1
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Return the logger, as the OAuth flow handler requires."""
+        return _LOGGER
+
+    @callback
+    def _async_replace_credentials(
+        self, entry: ConfigEntry, data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Replace an existing entry's credential, then reload it.
+
+        ``data`` replaces the entry's data rather than being merged into it,
+        so moving between an API token and a sign-in never leaves both
+        behind. The reload is scheduled here because the update listener
+        ignores credential changes (an account sign-in refreshing its access
+        token must not reload anything).
+        """
+        result = self.async_update_and_abort(entry, data=dict(data))
+        self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        return result
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Render and process the token form.
+    ) -> ConfigFlowResult:
+        """Offer the choice between signing in and pasting an API token."""
+        async_register_implementation(self.hass)
+        return self.async_show_menu(
+            step_id="user", menu_options=["pick_implementation", "token"]
+        )
 
-        The flow is single-step: validate the token, and on success create the
-        entry. Errors are surfaced via the ``errors`` dict so the form is
-        re-rendered with an inline message.
-        """
-
-        entries = self.hass.config_entries.async_entries(DOMAIN)
-        if entries:
-            return self.async_abort(reason="already_setup")
-
+    async def async_step_token(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Set up (or, from Reconfigure, switch to) an API token."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            try:
-                info = await validate_input(self.hass, user_input)
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected exception")
-                errors["base"] = "unknown"
-            else:
+            token = str(user_input.get(CONF_TOKEN, "")).strip()
+            errors = await _async_token_errors(self.hass, token)
+            if not errors:
+                if self.source == SOURCE_RECONFIGURE:
+                    return self._async_replace_credentials(
+                        self._get_reconfigure_entry(), {CONF_TOKEN: token}
+                    )
                 return self.async_create_entry(
-                    title=info["title"],
-                    data=user_input,
-                    options={CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL_SECONDS},
+                    title=ENTRY_TITLE,
+                    data={CONF_TOKEN: token},
+                    options=_default_options(),
                 )
 
         return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+            step_id="token", data_schema=_TOKEN_SCHEMA, errors=errors
+        )
+
+    async def async_oauth_create_entry(self, data: dict[str, Any]) -> ConfigFlowResult:
+        """Finish a sign-in: create the entry, or update the existing one.
+
+        From reauthentication or Reconfigure the existing entry keeps its
+        identity, devices and entities; only the credential changes. Creating
+        a second entry instead would orphan every entity on the first.
+        """
+        if self.source == SOURCE_REAUTH:
+            return self._async_replace_credentials(self._get_reauth_entry(), data)
+        if self.source == SOURCE_RECONFIGURE:
+            return self._async_replace_credentials(
+                self._get_reconfigure_entry(), data
+            )
+        return self.async_create_entry(
+            title=ENTRY_TITLE, data=data, options=_default_options()
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change how an existing installation connects (sign-in or API token)."""
+        async_register_implementation(self.hass)
+        return self.async_show_menu(
+            step_id="reconfigure", menu_options=["pick_implementation", "token"]
+        )
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """The credential stopped working; ask for the same kind again."""
+        if CONF_AUTH_IMPLEMENTATION in entry_data:
+            return await self.async_step_reauth_account()
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_account(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm, then sign in to the Eleven Energy account again."""
+        if user_input is None:
+            return self.async_show_form(step_id="reauth_account")
+        async_register_implementation(self.hass)
+        return await self.async_step_pick_implementation()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Take a replacement API token."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            token = str(user_input.get(CONF_TOKEN, "")).strip()
+            errors = await _async_token_errors(self.hass, token)
+            if not errors:
+                return self._async_replace_credentials(
+                    self._get_reauth_entry(), {CONF_TOKEN: token}
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm", data_schema=_TOKEN_SCHEMA, errors=errors
         )
 
     @staticmethod
@@ -166,70 +271,41 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class OptionsFlowHandler(OptionsFlow):
-    """Eleven Energy Plus Options Flow handler.
+    """Eleven Energy Plus options: poll interval and device-label override.
 
-    Intentionally has no ``__init__`` - ``self.config_entry`` is provided by
-    the :class:`OptionsFlow` base class. Manually assigning it is deprecated
-    and stops working in Home Assistant 2025.12.
+    The credential is deliberately not here: it is changed through
+    Reconfigure or reauthentication, which handle both kinds of credential
+    and cannot corrupt an account sign-in entry. Intentionally has no
+    ``__init__`` - ``self.config_entry`` is provided by the base class.
     """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Render and process the options form.
 
-        Validates the (possibly new) token against the API, persists it on
-        the entry's ``data`` (so :func:`_async_options_updated` notices the
-        change and triggers a reload), and saves the clamped poll interval
-        plus the optional device-label override on the entry's ``options``.
-        The clamp here is defence-in-depth: the :class:`NumberSelector`
-        schema already enforces the interval bounds, but a manually-crafted
-        UI payload could otherwise slip past.
-
-        The device-label override is intentionally a free-text string. An
-        empty string means "no override - keep using the API-derived label".
-        Changing it triggers a full reload from :func:`_async_options_updated`
-        because device-card info is captured at platform-setup time and
-        applying a new label to an already-registered device cleanly
-        requires re-running entity registration.
+        The interval clamp is defence in depth: the slider already enforces
+        the bounds. The device-label override is a free-text string; blank
+        means "use the label the API reports", and changing it reloads the
+        integration because device info is registered at platform setup.
         """
-        errors: dict[str, str] = {}
-
         if user_input is not None:
-            token = user_input["token"]
             try:
-                await validate_input(self.hass, {"token": token})
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected exception")
-                errors["base"] = "unknown"
-            else:
                 new_interval = int(user_input[CONF_POLL_INTERVAL])
-                new_interval = max(
-                    MIN_POLL_INTERVAL_SECONDS,
-                    min(MAX_POLL_INTERVAL_SECONDS, new_interval),
-                )
-                # Normalise the override: collapse whitespace, treat blanks
-                # as "unset" so the option stays comparable across save/load
-                # cycles and ``_async_options_updated`` can detect changes
-                # without false positives on leading/trailing spaces.
-                device_label = str(user_input.get(CONF_DEVICE_LABEL, "")).strip()
-                self.hass.config_entries.async_update_entry(
-                    self.config_entry,
-                    data={"token": token},
-                    title="Eleven Energy Plus",
-                )
-                return self.async_create_entry(
-                    title="",
-                    data={
-                        **self.config_entry.options,
-                        CONF_POLL_INTERVAL: new_interval,
-                        CONF_DEVICE_LABEL: device_label,
-                    },
-                )
+            except (KeyError, TypeError, ValueError):
+                new_interval = DEFAULT_POLL_INTERVAL_SECONDS
+            new_interval = max(
+                MIN_POLL_INTERVAL_SECONDS,
+                min(MAX_POLL_INTERVAL_SECONDS, new_interval),
+            )
+            device_label = str(user_input.get(CONF_DEVICE_LABEL, "") or "").strip()
+            return self.async_create_entry(
+                data={
+                    **self.config_entry.options,
+                    CONF_POLL_INTERVAL: new_interval,
+                    CONF_DEVICE_LABEL: device_label,
+                },
+            )
 
         current_interval = self.config_entry.options.get(
             CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL_SECONDS
@@ -240,9 +316,6 @@ class OptionsFlowHandler(OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        "token", default=self.config_entry.data["token"]
-                    ): str,
                     vol.Required(
                         CONF_POLL_INTERVAL, default=current_interval
                     ): NumberSelector(
@@ -259,5 +332,4 @@ class OptionsFlowHandler(OptionsFlow):
                     ): TextSelector(TextSelectorConfig()),
                 }
             ),
-            errors=errors,
         )

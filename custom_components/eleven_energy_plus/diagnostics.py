@@ -5,16 +5,16 @@ Home Assistant auto-discovers this module by name. When a user clicks
 :func:`async_get_config_entry_diagnostics` and serves the returned dict as a
 JSON file. The dict is intentionally a *snapshot of state we already have in
 memory*: the most recent raw site and per-device API payloads, the entry's
-options, the manifest version, and which devices/services we currently know
-about.
+options, the integration version, and what the controller knows about each
+inverter (model, phases, trackers, batteries, availability).
 
 This is the recommended path for users to share troubleshooting data, since
 it:
 
 * doesn't require them to enable debug logging,
 * doesn't require them to dig through ``home-assistant.log``, and
-* redacts sensitive material (API token, serial numbers, identifying ids)
-  before it leaves their machine.
+* redacts sensitive material (API token, account sign-in tokens, serial
+  numbers, identifying ids) before it leaves their machine.
 
 The redaction relies on :func:`homeassistant.components.diagnostics.async_redact_data`
 which walks the dict recursively and replaces values whose keys match
@@ -24,26 +24,30 @@ future should be added there; that's a single source of truth.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.diagnostics import async_redact_data
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.loader import async_get_integration
 
-from .const import DOMAIN
-from .controller import Controller
+from .const import CONF_AUTH_IMPLEMENTATION, DOMAIN
 
-# Keys (case-insensitive substring match would be nicer, but
-# ``async_redact_data`` does exact key matching) whose values we always strip
-# from the diagnostics dump. ``token`` covers the bearer token stored on the
-# entry; the other entries cover identifiers we don't strictly need to share
-# to debug a labelling issue but which a cautious user might prefer not to
-# leak in a public bug report.
+if TYPE_CHECKING:
+    from . import ElevenEnergyConfigEntry
+    from .controller import Controller
+
+# Keys whose values are always stripped from the diagnostics dump
+# (``async_redact_data`` matches keys exactly). ``token`` covers both the API
+# key and the whole OAuth token structure stored on the entry; the OAuth
+# fields are listed too in case they ever appear elsewhere. The identifiers
+# are not needed to debug a labelling issue, and a cautious user would rather
+# not post them in a public bug report.
 TO_REDACT: frozenset[str] = frozenset(
     {
         "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
         "serialNumber",
         "serial_number",
         "deviceId",
@@ -52,109 +56,99 @@ TO_REDACT: frozenset[str] = frozenset(
 )
 
 
-def _read_integration_version() -> str:
-    """Best-effort read of the integration version out of ``manifest.json``.
+async def _async_integration_version(hass: HomeAssistant) -> str:
+    """Return the integration version from Home Assistant's loader.
 
-    Diagnostics are most useful when the consumer can see *which* version of
-    the integration produced them. We avoid importing the manifest reader
-    helpers from Home Assistant core to keep this module trivially testable
-    in isolation; the file is small and the read is one-shot.
+    The loader has already read ``manifest.json``, so this costs no file I/O
+    inside the event loop (which Home Assistant reports as a blocking call).
     """
-    manifest_path = Path(__file__).parent / "manifest.json"
     try:
-        with manifest_path.open(encoding="utf-8") as fh:
-            return json.load(fh).get("version", "unknown")
-    except (OSError, ValueError):
+        integration = await async_get_integration(hass, DOMAIN)
+    except Exception:  # noqa: BLE001
         return "unknown"
+    version = integration.version
+    return str(version) if version else "unknown"
+
+
+def _controller_snapshot(controller: Controller) -> dict[str, Any]:
+    """Describe the live controller state."""
+    return {
+        "loaded": True,
+        "credential": (
+            "account sign-in" if controller.uses_account_sign_in else "API token"
+        ),
+        "auth_failed": controller.auth_failed,
+        "poll_interval_seconds": controller.poll_interval,
+        "device_label_override": controller.device_label_override,
+        # Device ids are wrapped in dicts keyed by ``deviceId`` so the
+        # redactor (which matches keys, not values) rewrites them.
+        "known_devices": [
+            {
+                "deviceId": device_id,
+                "label": inverter.device_label,
+                "model": inverter.model,
+                "three_phase": inverter.three_phase,
+                "mppt_count": inverter.mppt_count,
+                "battery_indices": inverter.battery_indices,
+                "available": inverter.available,
+                "entity_count": len(inverter.all_entities()),
+            }
+            for device_id, inverter in controller.devices.items()
+        ],
+        "registered_platforms": controller.registered_platforms,
+    }
 
 
 async def async_get_config_entry_diagnostics(
-    hass: HomeAssistant, entry: ConfigEntry
+    hass: HomeAssistant, entry: ElevenEnergyConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for an Eleven Energy Plus config entry.
 
-    Returns a JSON-serialisable dict with the following shape:
-
-    .. code-block:: python
+    Shape::
 
         {
-            "integration": {
-                "version": "1.5.0",
-                "domain": "eleven_energy_plus",
-            },
-            "entry": {
-                "title": "Eleven Energy Plus",
-                "data": {"token": "**REDACTED**"},
-                "options": {"poll_interval_seconds": 15, "device_label_override": ""},
-            },
-            "controller": {
-                "loaded": True,
-                "poll_interval_seconds": 15,
-                "device_label_override": "",
-                "known_devices": [{"deviceId": "**REDACTED**"}],
-                "registered_platforms": ["sensor", "binary_sensor"],
-            },
+            "integration": {"version": "2.0.0", "domain": "eleven_energy_plus"},
+            "entry": {"title": ..., "data": {...redacted...}, "options": {...}},
+            "controller": {"loaded": True, "credential": "API token", ...},
             "raw_payloads": {
-                "site": { ...redacted site payload... },
-                "devices": [
-                    {"deviceId": "**REDACTED**", "payload": { ... }},
-                ],
+                "site": {...redacted site payload...},
+                "devices": [{"deviceId": "**REDACTED**", "payload": {...}}],
             },
         }
 
-    The controller block reflects the *live* in-memory state - useful for
-    sanity-checking that a freshly-saved options change actually reached
-    the controller. The ``raw_payloads`` block reflects the last
-    *successful* poll for each endpoint, which is what makes this dump
-    useful for diagnosing label / field-mapping issues.
+    When no controller is loaded, ``controller`` is ``{"loaded": False}`` and
+    ``raw_payloads`` is ``{"site": None, "devices": {}}``, so consumers can
+    tell "not yet polled" from "polled with no devices".
     """
+    data = dict(entry.data)
     diagnostics: dict[str, Any] = {
         "integration": {
-            "version": _read_integration_version(),
+            "version": await _async_integration_version(hass),
             "domain": DOMAIN,
         },
         "entry": {
             "title": entry.title,
-            "data": dict(entry.data),
+            "credential": (
+                "account sign-in" if CONF_AUTH_IMPLEMENTATION in data else "API token"
+            ),
+            "data": data,
             "options": dict(entry.options),
         },
         "controller": {"loaded": False},
         "raw_payloads": {"site": None, "devices": {}},
     }
 
-    controller: Controller | None = hass.data.get(DOMAIN, {}).get("controller")
+    controller: Controller | None = getattr(entry, "runtime_data", None)
     if controller is not None:
-        diagnostics["controller"] = {
-            "loaded": True,
-            "poll_interval_seconds": controller.poll_interval,
-            "device_label_override": controller.device_label_override,
-            # Wrap each device id in a dict keyed by ``deviceId`` so
-            # :func:`async_redact_data` (which redacts by key-match, not by
-            # value-match) actually sees and rewrites them. Reviewers can
-            # still see the count of devices the integration knows about
-            # via ``len(known_devices)``.
-            "known_devices": [
-                {"deviceId": device_id} for device_id in controller.devices
-            ],
-            # The controller doesn't track which platforms have registered
-            # by *name*, only count - surface what we have so reviewers can
-            # spot a half-loaded entry (e.g. sensor up but binary_sensor
-            # never finished).
-            "registered_platforms": sorted(
-                controller._add_entities_callbacks.keys()  # noqa: SLF001
-            ),
-        }
-        # Same trick for per-device payloads: keying the dict by raw
-        # ``device_id`` would leak the id through the key, which
-        # ``async_redact_data`` cannot rewrite. Lift it into the value as
-        # ``deviceId`` so the redactor can find and rewrite it.
+        diagnostics["controller"] = _controller_snapshot(controller)
+        # Keying the dict by raw device id would leak the id through the key,
+        # which ``async_redact_data`` cannot rewrite, so it is lifted into the
+        # value as ``deviceId``.
         diagnostics["raw_payloads"] = {
-            "site": controller._last_site_payload,  # noqa: SLF001
+            "site": controller.last_site_payload,
             "devices": [
                 {"deviceId": device_id, "payload": payload}
-                for device_id, payload in (
-                    controller._last_device_payloads  # noqa: SLF001
-                ).items()
+                for device_id, payload in controller.last_device_payloads.items()
             ],
         }
 

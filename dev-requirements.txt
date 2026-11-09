@@ -1,9 +1,13 @@
-# Pinned-floor development dependencies for running the test suite.
+# Development dependencies for running the test suite.
 # Install with:
-#   python3 -m venv .venv
+#   python3.14 -m venv .venv
 #   .venv/bin/pip install -r dev-requirements.txt
 #
 # The ``pytest-homeassistant-custom-component`` package pulls in Home Assistant
 # core, pytest, the full HA test helper stack (aioclient_mock, MockConfigEntry,
-# etc.), pytest-asyncio, pytest-cov and other commonly-needed plugins.
-pytest-homeassistant-custom-component>=0.13.333
+# etc.), pytest-asyncio, pytest-cov and other commonly-needed plugins. Each
+# release pins one Home Assistant version; 0.13.375 pins HA 2026.10.4.
+#
+# The minimum supported Home Assistant (2026.3, see hacs.json) is exercised in
+# CI with pytest-homeassistant-custom-component==0.13.320 (HA 2026.3.4).
+pytest-homeassistant-custom-component>=0.13.375

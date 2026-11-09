@@ -1,0 +1,37 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.name }})
+    runs-on: "ubuntu-latest"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Minimum supported Home Assistant (hacs.json "homeassistant").
+          - name: "HA 2026.3"
+            requirement: "pytest-homeassistant-custom-component==0.13.320"
+          # Whatever the latest test package pins (latest stable or beta HA).
+          - name: "HA latest"
+            requirement: "pytest-homeassistant-custom-component"
+    steps:
+      - uses: "actions/checkout@v7"
+      - uses: "actions/setup-python@v7"
+        with:
+          python-version: "3.14"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "${{ matrix.requirement }}"
+      - name: Run the test suite
+        run: python -m pytest

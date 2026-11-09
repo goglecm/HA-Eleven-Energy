@@ -6,11 +6,14 @@ integration polls the API without leaving the dashboard.
 
 The Number entity is a *config* entity (``EntityCategory.CONFIG``): writing
 to it persists the new value on the config entry's options (which then fans
-out to the OptionsFlow + the controller via the standard
-:meth:`ConfigEntry.add_update_listener` plumbing in ``__init__.py``), and
+out to the controller via the update listener in ``__init__.py``), and
 reading from it returns the controller's currently-effective interval. The
 entity also subscribes to controller-side option changes so the displayed
 value stays in sync when the user edits the cadence in the OptionsFlow.
+
+Unlike the telemetry entities it stays available while the API is
+unreachable: it reflects local configuration, and lengthening the interval
+is a reasonable thing to want to do during an outage.
 """
 
 from __future__ import annotations
@@ -23,21 +26,20 @@ from homeassistant.components.number import (
     NumberEntity,
     NumberMode,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import generate_entity_id
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
     CONF_POLL_INTERVAL,
-    DOMAIN,
     MAX_POLL_INTERVAL_SECONDS,
     MIN_POLL_INTERVAL_SECONDS,
     POLL_INTERVAL_STEP_SECONDS,
 )
 
 if TYPE_CHECKING:
+    from . import ElevenEnergyConfigEntry
     from .controller import Controller
     from .hybrid_inverter import HybridInverter
 
@@ -45,7 +47,9 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: ElevenEnergyConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Register one poll-interval Number entity per discovered inverter.
 
@@ -56,7 +60,7 @@ async def async_setup_entry(
     site-wide setting, so having one Number per inverter is already a
     convenience rather than a strict requirement.
     """
-    controller = hass.data[DOMAIN]["controller"]
+    controller = entry.runtime_data
 
     entities: list[PollIntervalNumber] = [
         PollIntervalNumber(hass, entry, inverter, controller)
@@ -92,12 +96,11 @@ class PollIntervalNumber(NumberEntity):
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
+        entry: ElevenEnergyConfigEntry,
         inverter: HybridInverter,
         controller: Controller,
     ) -> None:
         """Build the entity bound to the controller's poll interval option."""
-        self.hass = hass
         self._entry = entry
         self._controller = controller
         self._attr_device_info = inverter.device_info
@@ -129,7 +132,7 @@ class PollIntervalNumber(NumberEntity):
             options={**self._entry.options, CONF_POLL_INTERVAL: new_value},
         )
         # Write our new value straight away so the UI feels responsive; the
-        # async update listener will also fan out via the controller shortly.
+        # update listener will also fan out via the controller shortly.
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
@@ -141,3 +144,13 @@ class PollIntervalNumber(NumberEntity):
             self.async_write_ha_state()
 
         self.async_on_remove(self._controller.add_option_listener(_refresh))
+
+    @callback
+    def async_entity_id_changed(self, old_entity_id: str) -> None:
+        """Opt in to in-place ``entity_id`` changes (Home Assistant 2026.11+).
+
+        Nothing this entity sets up is keyed on its own ``entity_id``, so a
+        rename needs no extra work. Older Home Assistant versions never call
+        this method.
+        """
+        super().async_entity_id_changed(old_entity_id)  # type: ignore[misc]

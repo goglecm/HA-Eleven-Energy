@@ -1,32 +1,32 @@
 """Eleven Energy Plus ``binary_sensor`` platform.
 
 Mirror of :mod:`custom_components.eleven_energy_plus.sensor` for boolean values.
-Predefined binary sensors (currently just the ``Online`` connectivity entity)
-are registered up front; the controller's add-entities callback is stashed so
-auto-discovered binary fields (anything :func:`_infer_meta` identifies as a
-``bool``) can be added on the fly during polling.
+Known binary sensors (the ``Online`` connectivity entity, plus anything
+discovered from the reading taken during setup) are registered up front; the
+add-entities callback is stashed so auto-discovered binary fields can be
+added on the fly during polling.
 """
 
 from __future__ import annotations
 
-import logging
+from typing import TYPE_CHECKING, Any
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from . import ElevenEnergyConfigEntry
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: ElevenEnergyConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Register curated binary sensors and arm dynamic discovery."""
-    controller = hass.data[DOMAIN]["controller"]
+    """Register the known binary sensors and arm dynamic discovery."""
+    controller = entry.runtime_data
 
-    entities: list = []
+    entities: list[Any] = []
     for inverter in controller.devices.values():
         entities.extend(inverter.binary_sensor_entities.values())
     if entities:

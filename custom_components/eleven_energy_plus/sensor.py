@@ -1,41 +1,42 @@
 """Eleven Energy Plus ``sensor`` platform.
 
 This module is a thin shim that wires Home Assistant's ``sensor`` platform up
-to the central :class:`~custom_components.eleven_energy_plus.controller.Controller`.
-The interesting logic - both predefined and auto-discovered entities - lives
-in :mod:`custom_components.eleven_energy_plus.hybrid_inverter`.
+to the :class:`~custom_components.eleven_energy_plus.controller.Controller`
+stored on the config entry. The interesting logic - curated, model-driven
+and auto-discovered entities - lives in
+:mod:`custom_components.eleven_energy_plus.hybrid_inverter`.
 
 Two-stage entity registration:
 
-1. Predefined sensors that already exist on the inverter (PV power, battery
-   state of charge, etc.) are handed to ``async_add_entities`` immediately,
-   so the user sees curated entities on first load.
-2. The controller's ``async_add_entities`` callback is then stashed via
-   :meth:`Controller.complete_platform_setup`, allowing the dynamic
-   discovery in :meth:`HybridInverter._handle_leaf` to register new sensors
-   on the fly as the API surfaces additional fields.
+1. Every sensor that already exists on the inverters (curated ones, plus
+   anything discovered from the reading taken during setup) is handed to
+   ``async_add_entities`` immediately.
+2. The callback is then stashed via
+   :meth:`Controller.complete_platform_setup`, so entities created later
+   (newly reported fields, a newly fitted battery, a new inverter) are
+   registered on the fly.
 """
 
 from __future__ import annotations
 
-import logging
+from typing import TYPE_CHECKING, Any
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from . import ElevenEnergyConfigEntry
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: ElevenEnergyConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Register the curated sensors and arm dynamic discovery."""
-    controller = hass.data[DOMAIN]["controller"]
+    """Register the known sensors and arm dynamic discovery."""
+    controller = entry.runtime_data
 
-    entities: list = []
+    entities: list[Any] = []
     for inverter in controller.devices.values():
         entities.extend(inverter.sensor_entities.values())
     if entities:

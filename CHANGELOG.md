@@ -5,6 +5,139 @@ captured here. Versions correspond to the `version` field in
 `custom_components/eleven_energy_plus/manifest.json`, and the format roughly
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2.0.0 - 2026-11-09
+
+Brings the integration up to Home Assistant 2026.11 (Marketplace, hassfest
+rules, DeviceInfo dataclass, unit enums, entity lifecycle), ports the useful
+work from the 28 commits upstream (`iPeel/HA-Eleven-Energy` 2.0 - 2.2, up to
+`78de8d1`) and hardens every path that can control the inverter. Verified on
+Home Assistant 2026.3.4, 2026.10.4 and 2026.11.1; hassfest (HA dev) is clean.
+
+### Breaking
+
+- **Work-mode inputs are validated, not clamped.** Every action has a schema:
+  out-of-range values, `nan` / infinity, booleans or text where a number is
+  expected, ambiguous booleans, unknown fields and missing required fields
+  now fail the call with a validation error before anything is sent.
+  Previously they were clamped (`150` % became `100` %), dropped, or - for
+  `"nan"` - turned into the maximum (see Fixed). Limits: percentages 0-100,
+  powers 0-50 kW (the API's ceiling; the UI slider stops at 20 kW),
+  `target_minutes` whole minutes 1-1440.
+- **Failed commands raise when no response is requested.** An automation that
+  calls a `set_work_mode_*` action without `response_variable` now fails at
+  that step if the command did not succeed, instead of carrying on silently.
+  With `response_variable` the structured result is still always returned.
+- **No more guessing the inverter.** An untargeted call on a site with more
+  than one inverter, or a target that matches no inverter or several, is
+  refused. Single-inverter sites are unaffected.
+- **Actions have an "Inverter" field instead of a target.** `services.yaml`
+  no longer declares `target` (hassfest now rejects the device filter it
+  used, and a declared target is shown as required). `device_id` and
+  `entity_id` are still accepted in calls, so existing automations keep
+  resolving to the same inverter.
+- **The API token moved out of Options.** It is changed through
+  **Reconfigure** (or the reauthentication prompt). Options keep the update
+  interval and the device-label override.
+- **Single entry enforced by Home Assistant** (`single_config_entry`): a second
+  setup aborts with the standard `single_instance_allowed` reason.
+- **The device label comes from the API's `model` block.** The device `name`
+  field is a provisioning default shared by every machine (the cause of
+  "North Sea 6 (6kW)" showing for other models), so it is now only a
+  fallback. Device cards relabel on upgrade; entity IDs do not change, and a
+  user override still wins.
+- **Positional MPPT / battery entities are migrated.** Entities that 1.x
+  auto-discovered by list position (`pv_mppts_0_power`, ...) are moved in the
+  entity registry to the new index-keyed entities (`mppt_1_power`, ...),
+  keeping their entity IDs and history. Auto-discovered entities for hardware
+  the model says is absent (a third tracker on a two-tracker machine, phase
+  registers on a single-phase machine, the `model` block's own flags) are
+  removed. Nothing is removed when the hardware cannot be determined.
+- **License changed to MIT**, following upstream's relicensing.
+
+### Added (ported from upstream)
+
+- **Sign in with an Eleven Energy account** (OAuth2 + PKCE, Eleven Energy's
+  public client, fresh verifier per authorization, `my.home-assistant.io`
+  redirect). API tokens remain supported. Access tokens are refreshed by
+  Home Assistant; a refresh never reloads the integration.
+- **Reconfigure** to switch between signing in and an API token without
+  losing devices, entities or history; **reauthentication** for both kinds
+  of credential when the API rejects the stored one.
+- **Machine-specific entities**: per-phase grid and system power / voltage /
+  current on three-phase models; per-MPPT power / voltage / current (three
+  trackers on dual-battery models, two otherwise); per-battery raw state of
+  charge, power and module count (a battery fitted later is picked up
+  live); rated AC / DC power. Phase entities share their group's category.
+- **Device actions** for the seven work modes, delegating to the actions,
+  validated when the automation is loaded.
+- **Business names** in the UI: Self Consumption, Grid Charge, Grid Export,
+  Excess PV Export, Idle Battery, Target State Of Charge, Reset Work Mode;
+  action names and descriptions moved to translations, with upstream's
+  corrected descriptions (for example: Grid Export's power is battery power,
+  not power at the meter).
+- `percentage_to_battery` accepted as an alias of `percent_to_battery`.
+- Documentation that any work mode switches the Eleven Energy optimiser off
+  until **Reset Work Mode** is sent.
+
+### Added
+
+- **Availability**: an inverter's entities go unavailable after 3
+  consecutive failed polls, or immediately when the credential is rejected,
+  and recover on the next good poll - automations no longer act on stale
+  values. The Update Interval entity stays available.
+- **Rejected credentials** (HTTP 401/403, refused token refresh) raise
+  `ConfigEntryAuthFailed` at setup and start reauthentication at runtime;
+  polling pauses instead of retrying a credential that will not work.
+- **Command ordering**: commands to one inverter run one at a time and the
+  newest wins - an older command still waiting to retry is abandoned rather
+  than overwriting a newer one later.
+- **Retry policy**: only network errors, timeouts, 408, 429 (honouring
+  `Retry-After`, capped at 30 s) and 5xx are retried; other 4xx fail at once.
+- Manifest `categories: ["energy.solar_batteries"]` for the Marketplace.
+- Diagnostics report the credential kind, auth state and per-inverter model,
+  phases, trackers, batteries and availability; sign-in tokens are redacted.
+- CI test workflow against Home Assistant 2026.3 (minimum) and latest; the
+  test suite fails on any Home Assistant "Detected ..." report about this
+  integration.
+
+### Fixed
+
+- **Actions disappeared after any reload** (token change, label change,
+  "Reload") until Home Assistant restarted. They are registered once and no
+  longer removed on unload.
+- **`"nan"` became full power**: `"nan"` kW was clamped to 50 kW and `"nan"`
+  % to 100 %. **`"inf"` minutes** raised an `OverflowError` out of a path
+  documented never to raise. Booleans were accepted as numbers.
+- **Binary sensors read the string `"false"` as on**, and started as off
+  ("offline") before the first reading; they now parse strictly and start
+  unknown.
+- **Diagnostics did blocking file I/O in the event loop** (reading
+  `manifest.json`), which Home Assistant reports; the version now comes from
+  the integration loader.
+- **Changing the token reloaded twice** (two update-listener calls racing);
+  credential changes now reload exactly once.
+- Options-flow errors showed raw keys (no `options.error` translations).
+- A non-object site payload crashed setup instead of retrying; malformed site
+  and device payloads are now validated.
+- A numeric sensor receiving text or NaN raised inside Home Assistant on
+  every poll; it now reports unknown.
+- Auto-discovery is capped at 200 entities per inverter.
+- The token is entered in a password field and never shown pre-filled.
+- Serial numbers are no longer logged at INFO on discovery.
+- `hassfest` failures: `services.yaml` used a device filter on `target` and a
+  `response` key, both now rejected.
+
+### Changed
+
+- Compatible with Home Assistant 2026.11: `DeviceInfo` built by keyword only,
+  `UnitOfRatio.PERCENTAGE` where available, `async_entity_id_changed` opt-in
+  on the Number entity, `entry.runtime_data`, `ConfigFlowResult`,
+  `AddConfigEntryEntitiesCallback`.
+- README: Marketplace (2026.11+) and HACS (2026.3-2026.10) installation, the
+  false "HACS Default" badge removed, release process documented.
+- `actions/checkout@v7` in workflows; `pytest-homeassistant-custom-component`
+  floor raised to 0.13.375.
+
 ## 1.5.0 - 2026-05-24
 
 ### Breaking
@@ -37,7 +170,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (Settings -> Devices & Services -> Eleven Energy Plus -> Configure ->
   "Device label override"). When set, it pins the device-card title and
   model to whatever the user types, regardless of what the
-  `https://api.elevenenergy.co.uk/site` endpoint returns. Useful when the
+  `https://portal.elevenenergy.co.uk/api/v1/site` endpoint returns. Useful when the
   upstream API has the wrong product label for an inverter (e.g. a stale
   "North Sea 6" provisioning default against actual Mediterranean Sea 12
   hardware). Leaving the field blank preserves the historical
