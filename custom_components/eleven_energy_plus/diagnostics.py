@@ -65,6 +65,18 @@ TO_REDACT: frozenset[str] = frozenset(
         "longitude",
         "email",
         "phone",
+        # Network identifiers of the inverter or its connection.
+        "ip",
+        "ipAddress",
+        "mac",
+        "macAddress",
+        "ssid",
+        "wifiSsid",
+        "imei",
+        "iccid",
+        # UK electricity and gas meter numbers, tied to the address.
+        "mpan",
+        "mprn",
     }
 )
 
@@ -140,7 +152,7 @@ async def async_get_config_entry_diagnostics(
     Shape::
 
         {
-            "integration": {"version": "2.0.0", "domain": "eleven_energy_plus"},
+            "integration": {"version": "2.0.1", "domain": "eleven_energy_plus"},
             "entry": {"title": ..., "data": {...redacted...}, "options": {...}},
             "controller": {"loaded": True, "credential": "API token", ...},
             "raw_payloads": {

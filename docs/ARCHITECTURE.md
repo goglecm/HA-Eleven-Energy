@@ -91,11 +91,15 @@ run one cycle.
 1. **Credential check.** While the credential is rejected nothing is polled.
    A rejection by HTTP status is re-tested every 10 minutes
    (`AUTH_RECOVERY_SECONDS`); a refused sign-in refresh is definitive.
-2. **Site listing** (`poll_site`). New hybrid inverters are discovered (read
-   once, then their entities are built); an inverter missing from 2
-   consecutive listings (`MISSING_AFTER_SITE_POLLS`) is marked missing: its
-   entities go unavailable and a repair is raised. When it is listed again it
-   stays unavailable until a fresh reading arrives.
+2. **Site listing** (`poll_site`). New hybrid inverters are discovered in
+   device-id order (read once, then their entities are built; an inverter
+   that cannot be read, or is found while polling is deferred, is built from
+   its listing and completes its hardware entities from its first reading).
+   A new inverter whose name another already has is numbered (`ordinal`,
+   `device_card_name`). An inverter missing from 2 consecutive listings
+   (`MISSING_AFTER_SITE_POLLS`) is marked missing: its entities go
+   unavailable and a repair is raised. When it is listed again it stays
+   unavailable until a fresh reading arrives.
 3. **Device readings** (`poll_devices`), one inverter at a time. A failure
    is counted against that inverter only; after 3 in a row
    (`UNAVAILABLE_AFTER_FAILED_POLLS`) its entities go unavailable. A reading
@@ -108,7 +112,9 @@ run one cycle.
 
 Requests use a 30-second total timeout (10 s to connect). Device ids from
 the listing are percent-encoded as a single path segment (`device_path`), so
-no id can address another device, and ids of `.` or `..` are ignored.
+no id can address another device, and ids of `.` or `..` are ignored. A
+reading whose `deviceId` names a different device than the one requested is
+refused as an API error.
 
 ## Values
 
@@ -121,15 +127,18 @@ no id can address another device, and ids of `.` or `..` are ignored.
    Connection, the ratings) stay available.
 2. **unknown** when the latest reading has no usable value: the field is
    null, absent (each reading clears every path it did not contain), or not
-   a valid value of its kind (a non-finite number, an ambiguous boolean).
+   a valid value of its kind (a non-finite number, an ambiguous boolean,
+   text longer than the 255 characters of a state).
 3. Otherwise the value. A value is never carried over from an older reading.
 
 `total_increasing` counters go through `TotalIncreasingGuard`: Home Assistant
 books a drop of 10 % or more as a meter reset, so a lower reading is shown
-as unknown until the next reading confirms it (a confirmed drop of at least
-10 % is a reset; a smaller one is a correction and keeps the previous value);
-negatives are never shown. Counters are `RestoreSensor`s, and after a
-restart the first reading is judged against the restored value.
+as unknown until the next reading confirms it. A drop of at least 10 % is a
+reset only when the reading straight after it is such a drop too; any other
+lower reading is a correction and keeps the previous value, so a held
+correction or a small dip can never confirm a later one-off drop. Negatives
+are never shown. Counters are `RestoreSensor`s, and after a restart the
+first reading is judged against the restored value.
 
 Lists (`pv.mppts`, `battery.batteries`) are keyed by each item's own `index`;
 items with a missing, repeated or out-of-range index are ignored and
@@ -236,6 +245,9 @@ Invariants, each pinned by tests (ledger ids in
 | --- | --- |
 | Only the poll and discovery paths feed readings to an inverter; a command only wakes the poller. | By construction (`HybridInverter.update` has no other caller); FC-CMD-06 |
 | An entity never shows a value older than the latest reading, including after an inverter returns to the listing. | D11, D36 |
+| A reading is applied only to the inverter it names. | D45 |
+| An energy counter reports a reset only when two readings in a row confirm it. | D13, D33, D44 |
+| No two inverters share a name. | D49 |
 | Commands to one inverter run one at a time, and the newest wins. | FC-CMD-03, FC-CMD-04 |
 | A device id only ever addresses its own device. | D42 |
 | A stopped controller never revives an entity, and nothing it reports afterwards is shown or stored; a late command outcome goes to the controller running the entry. | D10, D37, D39, D41 |
@@ -280,3 +292,19 @@ These were reviewed and deliberately left as they are:
   next poll shows which.
 * **An unusable device id** (`.` or `..`) is warned about once per Home
   Assistant run, not once per entry.
+* **A timed-out command has an unknown outcome.** If a request times out,
+  the cloud may still apply it, even after a newer command that succeeded.
+  The newest command wins within the integration; the Work Mode sensor
+  shows what is actually in effect.
+* **The optimiser reminder only knows about Home Assistant's commands.** A
+  Reset done in the Eleven Energy app does not stop it; the repair can be
+  ignored from Settings > Repairs.
+* **A label learnt late.** An inverter that could not be read when it was
+  found, and whose listing has no `model` block, gets its hardware entities
+  from its first reading but keeps the listing's name until the next start.
+* **The offline timer keeps counting through failed polls and a rejected
+  credential** (it restarts only after the inverter has been missing from
+  the listing). Those periods raise their own repairs.
+* **Commands to an inverter missing from the listing are still sent.** The
+  cloud decides whether it still accepts them; a refusal is reported as
+  usual.

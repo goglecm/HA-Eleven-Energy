@@ -178,6 +178,14 @@ class TestValueValidation:
         assert any("unusable value" in r.message for r in caplog.records)
 
     @pytest.mark.covers("FC-VAL-01")
+    def test_text_of_exactly_a_states_length_is_shown(self, inverter: HybridInverter) -> None:
+        sensor = inverter.sensor_entities["firmwareVersion"]
+        sensor.set_native_value("v" * 255)
+        assert sensor.native_value == "v" * 255
+        sensor.set_native_value("v" * 256)
+        assert sensor.native_value is None
+
+    @pytest.mark.covers("FC-VAL-01")
     def test_numeric_sensor_accepts_numeric_strings(
         self, inverter: HybridInverter
     ) -> None:
@@ -936,6 +944,64 @@ class TestCounterGuard:
         assert guard.judge(0.4) == (None, "decrease")
         guard.restore(0.2)
         assert guard.reference == 0.5, "a lower restored value never lowers the reference"
+
+    @pytest.mark.covers("FC-VAL-05")
+    def test_a_small_drop_below_a_restored_value_reads_unknown(self) -> None:
+        guard = hi.TotalIncreasingGuard()
+        guard.restore(5.0)
+        assert guard.judge(4.9) == (None, "decrease"), (
+            "before any reading, the restored value is not proof of a correction"
+        )
+
+
+class TestHardwareFromFirstReading:
+    """An inverter built without a reading takes its hardware from its first one (D50)."""
+
+    @staticmethod
+    def _reading(model: Any) -> dict[str, Any]:
+        reading: dict[str, Any] = {
+            "pv": {
+                "power": 1.0,
+                "mppts": [{"index": i, "power": 0.1 * i} for i in range(5)],
+            },
+            "grid": {"power": 0.2, "phases": {"L1": {"power": 0.1}}},
+        }
+        if model is not None:
+            reading["model"] = model
+        return reading
+
+    @pytest.mark.covers("FC-ENT-03", "FC-DISC-07")
+    def test_exactly_the_models_trackers_are_created(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass)
+        inverter.update(self._reading(dict(MODEL_THREE_PHASE_DUAL)))
+        trackers = {path.split(".")[2] for path in inverter.sensor_entities if path.startswith("pv.mppts.")}
+        assert trackers == {"1", "2", "3"}, "index 0 and 4 are not trackers of this model"
+        created = [entity for call in inverter.controller.add_entities.call_args_list for entity in call.args[1]]
+        assert {entity.entity_type for entity in created} >= {"mppt_3_power", "grid_phases_L1_power"}
+        assert inverter.sensor_entities["pv.mppts.3.power"].native_value == pytest.approx(0.3)
+
+    @pytest.mark.covers("FC-DISC-07")
+    def test_a_model_given_as_text_is_not_a_hardware_description(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass)
+        inverter.update(self._reading("Atlantic 20"))
+        assert not inverter.model_known
+        assert inverter.sensor_entities["pv.power"].native_value == 1.0
+
+    @pytest.mark.covers("FC-DISC-07")
+    def test_a_model_known_from_the_listing_is_not_rebuilt(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass, model=dict(MODEL_THREE_PHASE_DUAL))
+        before = dict(inverter.sensor_entities)
+        inverter.update(self._reading(dict(MODEL_SINGLE_PHASE)))
+        assert inverter.three_phase, "the listing already described the hardware"
+        assert all(inverter.sensor_entities[path] is entity for path, entity in before.items())
+
+    @pytest.mark.covers("FC-DISC-07")
+    def test_the_first_reading_settles_the_hardware(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass)
+        inverter.update(self._reading(None))
+        inverter.update(self._reading(dict(MODEL_THREE_PHASE_DUAL)))
+        assert not inverter.model_known, "as discovery would have: a later reading changes nothing"
+        assert not any(path.startswith("pv.mppts.") for path in inverter.sensor_entities)
 
 
 class TestOnlineFlag:

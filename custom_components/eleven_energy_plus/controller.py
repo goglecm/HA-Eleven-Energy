@@ -97,7 +97,7 @@ from .const import (
     RATE_LIMIT_BACKOFF_SECONDS,
     ErrorKind,
 )
-from .hybrid_inverter import HybridInverter
+from .hybrid_inverter import HybridInverter, device_card_name
 from .notifications import FaultReporter
 from .parsing import finite_float, parse_bool, parse_retry_after, parse_whole_number
 
@@ -154,6 +154,10 @@ _API_WORK_MODE_NAMES: dict[str, str] = {
     "set_work_mode_target_soc": "targetSoc",
     "set_work_mode_reset": "reset",
 }
+
+# What a ``work_mode_failed`` issue is raised for when the command failed
+# before an inverter was resolved.
+_SITE_ISSUE_TARGET = "site"
 
 # Failure kinds that leave a ``work_mode_failed`` repair issue. Invalid input
 # is the caller's to fix and is raised to the caller; a superseded or aborted
@@ -747,6 +751,11 @@ class Controller:
             raise ElevenEnergyApiError(
                 f"device {device_id} API returned an unexpected payload"
             )
+        reported = body.get("deviceId")
+        if reported is not None and str(reported) != device_id:
+            raise ElevenEnergyApiError(
+                f"device {device_id} API returned the reading of device {reported!r}"
+            )
         return body
 
     def _defer_polls(self, err: ElevenEnergyRateLimitedError) -> None:
@@ -1037,10 +1046,12 @@ class Controller:
             return result
         if result["success"]:
             owner.faults.report_work_mode_result(device_id, owner._device_name(device_id), None)
+            # A failure no inverter was resolved for: commands work again.
+            owner.faults.report_work_mode_result(_SITE_ISSUE_TARGET, owner._device_name(None), None)
             owner.faults.record_work_mode(device_id, mode)
         elif kind in _ISSUE_KINDS:
             owner.faults.report_work_mode_result(
-                device_id or "site", owner._device_name(device_id), str(result["error"])
+                device_id or _SITE_ISSUE_TARGET, owner._device_name(device_id), str(result["error"])
             )
         return result
 
@@ -1199,7 +1210,11 @@ class Controller:
             _LOGGER.warning("Eleven Energy Plus site poll failed: %s", err)
             return False
         self._last_site_payload = payload
-        await self._reconcile_site(payload)
+        try:
+            await self._reconcile_site(payload)
+        except ElevenEnergyAuthError:
+            # Rejected while reading a newly listed inverter.
+            return False
         return True
 
     async def _reconcile_site(self, payload: dict[str, Any]) -> None:
@@ -1225,7 +1240,9 @@ class Controller:
             for summary in payload["devices"]
             if isinstance(summary, dict) and summary.get("deviceId") in listed
         }
-        for device_id in listed:
+        # Sorted, so which of two namesakes is numbered does not depend on
+        # the order the API lists them in.
+        for device_id in sorted(listed):
             if device_id in self.devices:
                 continue
             await self._discover(device_id, summaries[device_id])
@@ -1255,16 +1272,25 @@ class Controller:
             summary,
         )
 
-        try:
-            state: dict[str, Any] | None = await self._fetch_device(device_id)
-        except ElevenEnergyApiError as err:
-            _LOGGER.warning(
-                "Could not read Eleven Energy Plus device %s during "
-                "discovery: %s",
+        state: dict[str, Any] | None = None
+        if self._poll_deferral() > 0:
+            _LOGGER.info(
+                "Eleven Energy Plus is rate limited; device %s is read once "
+                "polling resumes",
                 device_id,
-                err,
             )
-            state = None
+        else:
+            try:
+                state = await self._fetch_device(device_id)
+            except ElevenEnergyRateLimitedError as err:
+                self._defer_polls(err)
+            except ElevenEnergyApiError as err:
+                _LOGGER.warning(
+                    "Could not read Eleven Energy Plus device %s during "
+                    "discovery: %s",
+                    device_id,
+                    err,
+                )
 
         label = api_device_label(summary, state)
         override = self.device_label_override
@@ -1278,6 +1304,14 @@ class Controller:
             )
             label = override
 
+        # Two inverters of one model, or any two under the label override,
+        # would share a name; the Inverter field and the repair texts must
+        # tell them apart.
+        taken = {known.display_name.casefold() for known in self.devices.values()}
+        ordinal = 1
+        while device_card_name(label, ordinal).casefold() in taken:
+            ordinal += 1
+
         serial = summary.get("serialNumber")
         inverter = HybridInverter(
             self.hass,
@@ -1287,6 +1321,7 @@ class Controller:
             serial if isinstance(serial, str) else "",
             model=model_block(summary, state),
             state=state,
+            ordinal=ordinal,
         )
         self.devices[device_id] = inverter
         _LOGGER.info(
@@ -1437,7 +1472,8 @@ class Controller:
 
         async def periodic() -> None:
             try:
-                await self.poll_devices(unread_only=True)
+                if self._poll_deferral() == 0:
+                    await self.poll_devices(unread_only=True)
             except Exception:
                 _LOGGER.exception("Eleven Energy Plus initial device poll failed")
 

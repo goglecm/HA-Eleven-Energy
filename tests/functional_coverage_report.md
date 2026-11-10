@@ -15,7 +15,7 @@ passing tests on the last full run. Model: `tests/functional_coverage.py`.
 | FC-AUTH-03 | A sign-in token refresh never reloads the entry | 2 |
 | FC-AUTH-04 | An expired sign-in token is refreshed before the request | 3 |
 | FC-AUTH-05 | A rejected credential at setup ends in SETUP_ERROR plus reauthentication | 8 |
-| FC-AUTH-06 | A rejected credential at runtime makes every entity unavailable and starts reauthentication | 6 |
+| FC-AUTH-06 | A rejected credential at runtime makes every entity unavailable and starts reauthentication | 7 |
 | FC-AUTH-07 | A refused sign-in refresh is definitive (reauthentication, no recovery probe) | 3 |
 | FC-AUTH-08 | A transient rejection recovers on its own through the recovery probe | 4 |
 | FC-AUTH-09 | A blank stored token starts reauthentication | 5 |
@@ -39,15 +39,15 @@ passing tests on the last full run. Model: `tests/functional_coverage.py`.
 | FC-OPT-06 | A stored interval is parsed strictly (booleans, fractions, text, range) | 15 |
 | FC-DISC-01 | Hybrid inverters are discovered and other device types ignored | 4 |
 | FC-DISC-02 | Each new inverter is read once before its entities are built | 2 |
-| FC-DISC-03 | Device label precedence: override > model.name > name > fallbacks | 5 |
-| FC-DISC-04 | An inverter added at runtime gets sensors, binary sensors and an Update Interval entity | 2 |
+| FC-DISC-03 | Device label precedence: override > model.name > name > fallbacks | 9 |
+| FC-DISC-04 | An inverter added at runtime gets sensors, binary sensors and an Update Interval entity | 4 |
 | FC-DISC-05 | An inverter that disappears from the site becomes unavailable, raises an issue and can be removed | 13 |
 | FC-DISC-06 | Malformed site payloads are reported and retried, never crash | 6 |
-| FC-DISC-07 | Discovery survives a failed device read | 2 |
-| FC-DISC-08 | A device id addresses only its own device in every request | 8 |
+| FC-DISC-07 | Discovery survives a failed device read | 8 |
+| FC-DISC-08 | A device id addresses only its own device in every request | 12 |
 | FC-ENT-01 | Curated entities have the documented units, device classes and categories | 6 |
-| FC-ENT-02 | Three-phase models get per-phase entities; single-phase models do not | 4 |
-| FC-ENT-03 | The number of MPPT entity sets comes from the model | 4 |
+| FC-ENT-02 | Three-phase models get per-phase entities; single-phase models do not | 5 |
+| FC-ENT-03 | The number of MPPT entity sets comes from the model | 6 |
 | FC-ENT-04 | Battery entity sets follow the reading, including batteries fitted later | 4 |
 | FC-ENT-05 | Nameplate ratings come from the model block | 5 |
 | FC-ENT-06 | Unknown fields are auto-discovered with inferred units | 50 |
@@ -55,11 +55,11 @@ passing tests on the last full run. Model: `tests/functional_coverage.py`.
 | FC-ENT-08 | Generic lists are expanded and truncated at the cap | 2 |
 | FC-ENT-09 | Entity ids are always in the platform's own domain | 3 |
 | FC-ENT-10 | The API Connection sensor is always available and reflects polling | 8 |
-| FC-VAL-01 | Numeric sensors only report finite numbers | 16 |
+| FC-VAL-01 | Numeric sensors only report finite numbers | 20 |
 | FC-VAL-02 | Binary sensors parse strictly and start unknown | 12 |
 | FC-VAL-03 | A null or missing field reads unknown, never the previous value | 122 |
-| FC-VAL-04 | A one-off dip on a total_increasing counter is not reported as a reset | 53 |
-| FC-VAL-05 | A negative total_increasing value is rejected | 53 |
+| FC-VAL-04 | A one-off dip on a total_increasing counter is not reported as a reset | 93 |
+| FC-VAL-05 | A negative total_increasing value is rejected | 54 |
 | FC-VAL-06 | Indexed lists are keyed by own index; out-of-set indices are reported | 8 |
 | FC-VAL-07 | Translated state values are normalised to their translation keys | 1 |
 | FC-AVAIL-01 | Entities go unavailable after consecutive failed polls and recover | 7 |
@@ -86,8 +86,8 @@ passing tests on the last full run. Model: `tests/functional_coverage.py`.
 | FC-CMD-04 | Commands to different inverters do not block each other | 1 |
 | FC-CMD-05 | Shutdown aborts a command's retry backoff | 16 |
 | FC-CMD-06 | A successful command triggers an early poll | 1 |
-| FC-POLL-01 | The poller polls immediately, then at the configured interval | 1 |
-| FC-POLL-02 | Rate limiting (429) defers the next poll | 5 |
+| FC-POLL-01 | The poller polls immediately, then at the configured interval | 2 |
+| FC-POLL-02 | Rate limiting (429) defers the next poll | 8 |
 | FC-POLL-03 | An early-poll request never shortens a command's backoff | 1 |
 | FC-DEVACT-01 | Device actions are offered for Eleven Energy Plus devices only | 2 |
 | FC-DEVACT-02 | Each device action offers exactly its work mode's fields | 7 |
@@ -96,7 +96,7 @@ passing tests on the last full run. Model: `tests/functional_coverage.py`.
 | FC-NOTIF-01 | cloud_unreachable is raised after 15 minutes of failed polls and cleared on recovery | 5 |
 | FC-NOTIF-02 | inverter_offline is raised after 15 minutes offline and cleared when online | 2 |
 | FC-NOTIF-03 | inverter_missing is raised and cleared with the site listing | 3 |
-| FC-NOTIF-04 | work_mode_failed is raised for API, auth and internal failures (not bad input) and cleared on success | 11 |
+| FC-NOTIF-04 | work_mode_failed is raised for API, auth and internal failures (not bad input) and cleared on success | 12 |
 | FC-NOTIF-05 | optimiser_off is raised 24 hours after a non-reset work mode and cleared by Reset | 4 |
 | FC-NOTIF-06 | The optimiser timer survives a restart | 2 |
 | FC-NOTIF-07 | A wall clock moving backwards restarts the optimiser timer | 1 |
@@ -107,7 +107,7 @@ passing tests on the last full run. Model: `tests/functional_coverage.py`.
 | FC-MIG-02 | Obsolete entities are removed only when the hardware is known | 4 |
 | FC-MIG-03 | The migration is idempotent | 1 |
 | FC-DIAG-01 | Diagnostics have the documented shape and read the version without file I/O | 5 |
-| FC-DIAG-02 | Credentials, serials, ids and personal fields are redacted | 10 |
+| FC-DIAG-02 | Credentials, serials, ids and personal fields are redacted | 20 |
 | FC-DIAG-03 | Diagnostics include per-inverter state, active issues and the last successful poll | 2 |
 | FC-DIAG-04 | Diagnostics work without a loaded controller | 1 |
 | FC-TIME-01 | Durations use the monotonic clock and ignore wall-clock jumps | 4 |
@@ -123,7 +123,7 @@ passing tests on the last full run. Model: `tests/functional_coverage.py`.
 | FC-LIFE-06 | YAML configuration is not supported | 1 |
 | FC-STATIC-01 | services.yaml satisfies hassfest's current rules | 4 |
 | FC-STATIC-02 | Translations are complete and contain no unused keys | 5 |
-| FC-STATIC-03 | Every Home Assistant import is public on the installed version | 108 |
+| FC-STATIC-03 | Every Home Assistant import is public on the installed version | 109 |
 | FC-STATIC-04 | manifest.json and hacs.json carry the required fields | 2 |
 | FC-STATIC-05 | No except block swallows an error silently | 1 |
 | FC-STATIC-06 | README behavioural statements map to model items | 7 |

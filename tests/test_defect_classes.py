@@ -31,7 +31,11 @@ from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers import config_entry_oauth2_flow, device_registry as dr
+from homeassistant.helpers import (
+    config_entry_oauth2_flow,
+    device_registry as dr,
+    issue_registry as ir,
+)
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
@@ -1551,3 +1555,359 @@ async def test_a_device_id_only_ever_addresses_its_own_device(
     assert not stray, f"requests left their device: {stray}"
     for_b = [url for url in requests if _addresses(url, "b") and str(url).endswith("operatingMode")]
     assert not for_b, "a command for another id must never reach inverter b"
+
+
+# ---------------------------------------------------------------------------
+# Defect class "counter" (D44): a meter reset must confirm itself
+# ---------------------------------------------------------------------------
+
+# A drop of 10 % or more is only a reset when the reading after it is a drop
+# of that size too. Whatever lower reading came before - a small decrease, a
+# held correction, a negative - must not count as that confirmation.
+_UNCONFIRMED_RESETS = {
+    "held_correction_then_glitch": ([10.0, 9.5, 9.5, 0.0, 10.2], [10.0, None, 10.0, None, 10.2], "defect"),
+    "small_dip_then_glitch": ([10.0, 9.5, 0.0, 10.2], [10.0, None, None, 10.2], "defect"),
+    "correction_then_real_reset": ([10.0, 9.5, 9.5, 0.1, 0.2], [10.0, None, 10.0, None, 0.2], "defect"),
+    "negative_then_glitch": ([10.0, -1.0, 0.0, 10.2], [10.0, None, None, 10.2], "guard"),
+    "glitch_then_small_dip": ([10.0, 0.0, 9.5, 10.2], [10.0, None, 10.0, 10.2], "guard"),
+}
+
+
+@pytest.mark.covers("FC-VAL-04")
+@pytest.mark.parametrize("path", _COUNTER_PATHS)
+@pytest.mark.parametrize(
+    ("readings", "expected"),
+    [
+        pytest.param(readings, expected, id=name, marks=getattr(pytest.mark, mark)("D44"))
+        for name, (readings, expected, mark) in _UNCONFIRMED_RESETS.items()
+    ],
+)
+def test_a_meter_reset_is_confirmed_by_its_own_next_reading(
+    hass: HomeAssistant, path: str, readings: list[float], expected: list[float | None]
+) -> None:
+    inverter = _inverter(hass, {}, {})
+    seen = []
+    for value in readings:
+        reading: dict[str, Any] = {}
+        _set_path(reading, path, value)
+        inverter.update(reading)
+        seen.append(inverter.sensor_entities[path].native_value)
+    assert seen == expected, "a one-off drop was booked as a meter reset"
+
+
+# ---------------------------------------------------------------------------
+# Defect class "addressing" (D45): a reading belongs to the device it names
+# ---------------------------------------------------------------------------
+
+
+def _reading_of(device_id: str, pv_power: float) -> dict[str, Any]:
+    reading = device_payload(device_id)
+    reading["pv"]["power"] = pv_power
+    return reading
+
+
+@pytest.mark.covers("FC-DISC-08")
+@pytest.mark.parametrize(
+    "payload_id",
+    [
+        pytest.param("someone-else", marks=pytest.mark.defect("D45"), id="other_device"),
+        pytest.param(None, marks=pytest.mark.guard("D45"), id="no_device_id"),
+    ],
+)
+@pytest.mark.parametrize("when", ["discovery", "poll"])
+async def test_a_reading_is_only_applied_to_the_device_it_names(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, payload_id: str | None, when: str
+) -> None:
+    good = _reading_of(DEVICE_ID, 1.5)
+    odd = _reading_of(DEVICE_ID, 9.9)
+    if payload_id is None:
+        del odd["deviceId"]
+    else:
+        odd["deviceId"] = payload_id
+    aioclient_mock.get(f"{BASE_URL}site", json={"devices": [site_summary()]})
+    aioclient_mock.get(f"{BASE_URL}devices/{DEVICE_ID}", json=odd if when == "discovery" else good)
+    entry = api_key_entry()
+    assert await setup_entry(hass, entry)
+    controller = entry.runtime_data
+    if when == "poll":
+        aioclient_mock.clear_requests()
+        aioclient_mock.get(f"{BASE_URL}devices/{DEVICE_ID}", json=odd)
+        await controller.poll_devices()
+    await hass.async_block_till_done()
+    shown = hass.states.get(f"sensor.{DEVICE_ID}_pv_power").state
+    if payload_id is None:
+        assert shown == "9.9", "a reading that names no device is the one asked for"
+    else:
+        assert shown != "9.9", "another device's reading was shown as this inverter's"
+
+
+# ---------------------------------------------------------------------------
+# Defect class "classification" (D46): discovery inside a poll cycle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.defect("D46")
+@pytest.mark.covers("FC-AUTH-06", "FC-DISC-04")
+async def test_a_credential_rejected_while_reading_a_new_inverter_ends_the_cycle_cleanly(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    mock_api(aioclient_mock)
+    entry = api_key_entry()
+    assert await setup_entry(hass, entry)
+    controller = entry.runtime_data
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(
+        f"{BASE_URL}site", json={"devices": [site_summary(), site_summary("b"), site_summary("c")]}
+    )
+    aioclient_mock.get(f"{BASE_URL}devices/b", status=401)
+    aioclient_mock.get(f"{BASE_URL}devices/c", json=device_payload("c"))
+    assert await controller.poll_site() is False, "a rejected credential is not a usable listing"
+    assert controller.auth_failed
+    assert not any("devices/c" in str(call[1]) for call in aioclient_mock.mock_calls), (
+        "nothing more is asked of an API that rejects the credential"
+    )
+
+
+
+@pytest.mark.defect("D46")
+@pytest.mark.covers("FC-POLL-02", "FC-DISC-04")
+async def test_rate_limiting_while_reading_a_new_inverter_defers_polling(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    mock_api(aioclient_mock)
+    entry = api_key_entry()
+    assert await setup_entry(hass, entry)
+    controller = entry.runtime_data
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(
+        f"{BASE_URL}site", json={"devices": [site_summary(), site_summary("b"), site_summary("c")]}
+    )
+    aioclient_mock.get(f"{BASE_URL}devices/b", status=429, headers={"Retry-After": "120"})
+    aioclient_mock.get(f"{BASE_URL}devices/c", json=device_payload("c"))
+    await controller.poll_site()
+    assert controller._poll_deferral() > 100, "the API asked for two minutes"
+    assert not any("devices/c" in str(call[1]) for call in aioclient_mock.mock_calls), (
+        "no further reads while the API is rate limiting"
+    )
+    assert {"b", "c"} <= set(controller.devices), "both are created from their listing"
+
+
+@pytest.mark.defect("D46")
+@pytest.mark.covers("FC-POLL-02", "FC-POLL-01")
+async def test_rate_limiting_during_setup_holds_off_the_pollers_first_read(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_components.eleven_energy_plus import controller as controller_module
+
+    async def _stop_after_one_wait(awaitable: Any, timeout: float | None = None) -> Any:  # noqa: ASYNC109 - stands in for asyncio.wait_for
+        awaitable.close()
+        controller._shutdown.set()
+        raise TimeoutError
+
+    monkeypatch.setattr(controller_module.asyncio, "wait_for", _stop_after_one_wait)
+    aioclient_mock.get(f"{BASE_URL}site", json={"devices": [site_summary()]})
+    aioclient_mock.get(
+        f"{BASE_URL}devices/{DEVICE_ID}", status=429, headers={"Retry-After": "120"}
+    )
+    entry = api_key_entry()
+    assert await setup_entry(hass, entry)
+    controller = entry.runtime_data
+    assert controller.poller_task is not None
+    await asyncio.wait({controller.poller_task}, timeout=1)
+    reads = [call for call in aioclient_mock.mock_calls if f"devices/{DEVICE_ID}" in str(call[1])]
+    assert len(reads) == 1, "the poller read again straight after a 429 asking for two minutes"
+
+
+# ---------------------------------------------------------------------------
+# Defect class "silent" (D47): a text value too long to be a state
+# ---------------------------------------------------------------------------
+
+_LONG_TEXT_PATHS = {
+    "auto_discovered": ("diagnostic.message", "sensor.abc_diagnostic_message"),
+    "firmware_version": ("firmwareVersion", "sensor.abc_firmware_version"),
+    "status": ("status", "sensor.abc_system_status"),
+}
+
+
+@pytest.mark.defect("D47")
+@pytest.mark.covers("FC-VAL-01")
+@pytest.mark.parametrize("case", list(_LONG_TEXT_PATHS))
+async def test_a_text_value_too_long_for_a_state_reads_unknown_once(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, caplog: pytest.LogCaptureFixture, case: str
+) -> None:
+    path, entity_id = _LONG_TEXT_PATHS[case]
+    mock_api(aioclient_mock)
+    entry = api_key_entry()
+    assert await setup_entry(hass, entry)
+    controller = entry.runtime_data
+    for attempt in range(3):
+        reading = device_payload()
+        _set_path(reading, path, f"{attempt}" + "x" * 300)
+        aioclient_mock.clear_requests()
+        aioclient_mock.get(f"{BASE_URL}devices/{DEVICE_ID}", json=reading)
+        await controller.poll_devices()
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == STATE_UNKNOWN
+    core_errors = [
+        r for r in caplog.records if r.name == "homeassistant.core" and r.levelno >= logging.ERROR
+    ]
+    assert not core_errors, "Home Assistant logged an error for every change"
+    warnings = [r for r in caplog.records if r.name == HI_LOGGER and "unusable value" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+# ---------------------------------------------------------------------------
+# Defect class "stale" (D48): a failure not tied to an inverter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.defect("D48")
+@pytest.mark.covers("FC-NOTIF-04")
+async def test_a_site_level_command_failure_is_cleared_by_the_next_success(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    mock_api(aioclient_mock)
+    aioclient_mock.post(POST_URL, status=200)
+    entry = api_key_entry()
+    assert await setup_entry(hass, entry)
+    controller = entry.runtime_data
+    with patch.object(controller, "_resolve_target_device", side_effect=RuntimeError("bug")):
+        failed = await controller.set_work_mode("set_work_mode_pv_export", {})
+    assert failed["device_id"] is None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "work_mode_failed_site") is not None
+
+    assert (await controller.set_work_mode("set_work_mode_pv_export", {}))["success"]
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "work_mode_failed_site") is None, (
+        "a later success shows the commands work again"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Defect class "addressing" (D49): every inverter can be told apart
+# ---------------------------------------------------------------------------
+
+_SAME_MODEL = {**MODEL_SINGLE_PHASE}
+_OTHER_MODEL = {**MODEL_SINGLE_PHASE, "name": "Baltic 8"}
+_NAME_CASES = {
+    # name: (models of inverters a and b, label override, expected names, mark)
+    "same_model": (
+        [_SAME_MODEL, _SAME_MODEL],
+        "",
+        ["Eleven Energy Plus Mediterranean Sea 12", "Eleven Energy Plus Mediterranean Sea 12 (2)"],
+        "defect",
+    ),
+    "label_override": (
+        [_SAME_MODEL, _OTHER_MODEL],
+        "Garage",
+        ["Eleven Energy Plus Garage", "Eleven Energy Plus Garage (2)"],
+        "defect",
+    ),
+    "different_models": (
+        [_SAME_MODEL, _OTHER_MODEL],
+        "",
+        ["Eleven Energy Plus Mediterranean Sea 12", "Eleven Energy Plus Baltic 8"],
+        "guard",
+    ),
+    "single_inverter_override": ([_SAME_MODEL], "Garage", ["Eleven Energy Plus Garage"], "guard"),
+}
+
+
+@pytest.mark.covers("FC-DISC-03")
+@pytest.mark.parametrize(
+    ("models", "override", "expected"),
+    [
+        pytest.param(models, override, expected, id=name, marks=getattr(pytest.mark, mark)("D49"))
+        for name, (models, override, expected, mark) in _NAME_CASES.items()
+    ],
+)
+async def test_every_inverter_has_a_name_of_its_own(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    models: list[dict[str, Any]],
+    override: str,
+    expected: list[str],
+) -> None:
+    ids = ["a", "b"][: len(models)]
+    aioclient_mock.get(
+        f"{BASE_URL}site",
+        json={"devices": [site_summary(i, model=m) for i, m in zip(ids, models, strict=True)]},
+    )
+    for device_id, model in zip(ids, models, strict=True):
+        aioclient_mock.get(f"{BASE_URL}devices/{device_id}", json=device_payload(device_id, model=model))
+    entry = api_key_entry(options={CONF_POLL_INTERVAL: 30, CONF_DEVICE_LABEL: override})
+    assert await setup_entry(hass, entry)
+    by_id = {
+        identifier: device.name
+        for device in dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+        for domain, identifier in device.identifiers
+        if domain == DOMAIN
+    }
+    assert [by_id[device_id] for device_id in ids] == expected
+
+
+# ---------------------------------------------------------------------------
+# Defect class "stale" (D50): hardware learnt from the first reading
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.defect("D50")
+@pytest.mark.covers("FC-DISC-07", "FC-ENT-02", "FC-ENT-03")
+async def test_an_inverter_first_read_after_discovery_gets_its_hardware_entities(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, caplog: pytest.LogCaptureFixture
+) -> None:
+    aioclient_mock.get(f"{BASE_URL}site", json={"devices": [site_summary()]})
+    aioclient_mock.get(f"{BASE_URL}devices/{DEVICE_ID}", status=500)
+    entry = api_key_entry()
+    assert await setup_entry(hass, entry)
+    controller = entry.runtime_data
+
+    reading = _full_reading(MODEL_THREE_PHASE_DUAL)
+    reading["model"] = copy.deepcopy(MODEL_THREE_PHASE_DUAL)
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{BASE_URL}devices/{DEVICE_ID}", json=reading)
+    await controller.poll_devices()
+    await hass.async_block_till_done()
+
+    for index in (1, 2, 3):
+        state = hass.states.get(f"sensor.{DEVICE_ID}_mppt_{index}_power")
+        assert state is not None, f"MPPT {index} of a dual-battery model"
+        assert state.state == str(0.5 * index)
+    phase = controller.devices[DEVICE_ID].sensor_entities["grid.phases.L1.power"]
+    assert not phase.auto_discovered, "a three-phase model's phases are curated"
+    assert not [r for r in caplog.records if r.name == HI_LOGGER and "model is unknown" in r.getMessage()]
+
+
+# ---------------------------------------------------------------------------
+# Defect class "privacy" (D51): identifiers beyond the address book
+# ---------------------------------------------------------------------------
+
+_NETWORK_AND_METER_IDS = {
+    "ipAddress": "192.0.2.41",
+    "ip": "192.0.2.42",
+    "macAddress": "00:1A:2B:3C:4D:5E",
+    "mac": "00:1A:2B:3C:4D:5F",
+    "ssid": "SmithFamilyWiFi",
+    "wifiSsid": "SmithFamilyWiFi5G",
+    "imei": "356938035643809",
+    "iccid": "8944500102198304826",
+    "mpan": "1200023305963",
+    "mprn": "9587254103",
+}
+
+
+@pytest.mark.defect("D51")
+@pytest.mark.covers("FC-DIAG-02")
+@pytest.mark.parametrize("field", list(_NETWORK_AND_METER_IDS))
+async def test_diagnostics_redact_network_and_meter_identifiers(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, field: str
+) -> None:
+    value = _NETWORK_AND_METER_IDS[field]
+    site = {"devices": [site_summary()], "site": {field: value}}
+    reading = device_payload()
+    reading["network"] = {field: value}
+    aioclient_mock.get(f"{BASE_URL}site", json=site)
+    aioclient_mock.get(f"{BASE_URL}devices/{DEVICE_ID}", json=reading)
+    entry = api_key_entry()
+    assert await setup_entry(hass, entry)
+    dump = await async_get_config_entry_diagnostics(hass, entry)
+    assert value not in repr(dump)

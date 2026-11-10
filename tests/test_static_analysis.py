@@ -249,6 +249,7 @@ _SILENT_ALLOWED: dict[tuple[str, str, str], str] = {
     ("controller.py", "_request", "aiohttp.ContentTypeError,ValueError"): "a non-JSON body becomes None and the caller reports an unexpected payload",
     ("controller.py", "poll_site", "ElevenEnergyAuthError"): "reported where it is raised (_handle_auth_failure)",
     ("controller.py", "poll_site", "ElevenEnergyRateLimitedError"): "_defer_polls logs the deferral",
+    ("controller.py", "_discover", "ElevenEnergyRateLimitedError"): "_defer_polls logs the deferral",
     ("controller.py", "poll_devices", "ElevenEnergyAuthError"): "reported where it is raised (_handle_auth_failure)",
     ("parsing.py", "finite_float", "TypeError,ValueError,OverflowError"): "parser: None means invalid and the caller reports it",
     ("parsing.py", "parse_retry_after", "TypeError,ValueError,IndexError,OverflowError"): "parser: None means no usable hint and the caller uses its own delay",

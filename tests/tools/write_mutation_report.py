@@ -87,7 +87,15 @@ RULES: tuple[Rule, ...] = (
         "`False`/`None` both say the condition is absent.",
         ("controller.Controller._track_missing", "controller.Controller.set_work_mode"),
         r"report_(missing|offline)\(device_id, device\.display_name, False\)"
-        r"|report_work_mode_result\(device_id, (self|owner)\._device_name\(device_id\), None\)",
+        r"|report_work_mode_result\(device_id, (self|owner)\._device_name\(device_id\), None\)"
+        r"|report_work_mode_result\(_SITE_ISSUE_TARGET, owner\._device_name\(None\), None\)",
+    ),
+    Rule(
+        "Equivalent: discovery applies the same reading straight after building "
+        "the inverter, and an inverter's first reading completes whatever its "
+        "constructor would have built from it (`_complete_hardware`).",
+        ("controller.Controller._discover",),
+        r"^\s*state=state,\s*$",
     ),
     Rule(
         "Equivalent: `X` is an unreserved character, which `quote` never encodes, "

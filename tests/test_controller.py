@@ -1555,6 +1555,27 @@ class TestWorkModeContract:
 class TestTargetsAndListing:
     """Corners of target resolution and of following the site listing."""
 
+    @pytest.mark.covers("FC-POLL-02", "FC-DISC-07")
+    async def test_a_deferral_of_under_a_second_still_holds_off_discovery_reads(
+        self,
+        controller: Controller,
+        aioclient_mock: AiohttpClientMocker,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from custom_components.eleven_energy_plus import controller as controller_module
+
+        class _Clock:
+            @staticmethod
+            def monotonic() -> float:
+                return 1000.0
+
+        monkeypatch.setattr(controller_module, "time", _Clock)
+        controller._polls_deferred_until = 1000.5
+        aioclient_mock.get(f"{BASE_URL}site", json=site_payload(site_summary("b")))
+        assert await controller.poll_site()
+        assert "b" in controller.devices, "built from its listing"
+        assert [str(call[1]) for call in aioclient_mock.mock_calls] == [f"{BASE_URL}site"]
+
     async def test_an_area_holding_only_an_entity_resolves(
         self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
     ) -> None:

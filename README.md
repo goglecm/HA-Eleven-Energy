@@ -78,6 +78,8 @@ The device card is named after the product the Eleven Energy API reports in its 
 
 If the label is still wrong, fill in **Device label override** in the options. It wins over everything the API reports, for both the device card title and the model field. Leave it blank to use the API's label. Changing it reloads the integration; entity IDs and history are kept. <!-- FC-DISC-03 FC-OPT-03 -->
 
+No two inverters share a name, so the **Inverter** field of the actions and the repair texts always tell them apart: when a second inverter would get the same name (two of one model, or any two under the label override) it is numbered, for example "Eleven Energy Plus Mediterranean Sea 12 (2)". Inverters are numbered in the order of their Eleven Energy device ids, so the numbers stay the same from one start to the next; an inverter added while Home Assistant is running takes the next free number until the next start. Renaming a device in Home Assistant overrides all of this. <!-- FC-DISC-03 -->
+
 ## Entities
 
 ### Every inverter
@@ -121,7 +123,7 @@ Which of these exist is decided from the API's model description and the first r
 | Battery *n* Modules | `_battery_1_modules` | One per fitted battery | Diagnostic |
 | Rated AC Power / Rated DC Power | `_model_maxAcPower`, `_model_maxDcPower` | When the model reports its ratings | Diagnostic |
 
-*Battery n Raw State Of Charge* is the battery management system's own figure, before the top and bottom buffer allowances, so it does not match the usable *State Of Charge*. Solar-tracker and battery readings are keyed by each item's own index, so a reading that ever omits one cannot shift another's values onto it; an item with no usable index, a repeated index, or a tracker index the model does not have is ignored and logged once (and listed in diagnostics) rather than guessed at. A battery fitted later gets its entities as soon as the API reports it. <!-- FC-ENT-02 FC-ENT-03 FC-ENT-04 FC-VAL-06 -->
+*Battery n Raw State Of Charge* is the battery management system's own figure, before the top and bottom buffer allowances, so it does not match the usable *State Of Charge*. Solar-tracker and battery readings are keyed by each item's own index, so a reading that ever omits one cannot shift another's values onto it; an item with no usable index, a repeated index, or a tracker index the model does not have is ignored and logged once (and listed in diagnostics) rather than guessed at. A battery fitted later gets its entities as soon as the API reports it, and an inverter that could not be read when it was first found gets its phase and tracker entities from its first reading. <!-- FC-ENT-02 FC-ENT-03 FC-ENT-04 FC-VAL-06 FC-DISC-07 -->
 
 ### Auto-discovered entities
 
@@ -152,7 +154,7 @@ Lists are expanded with index-based paths (`someList.0.value`), capped at 32 ent
 
 ### Availability and values you can trust
 
-An entity never shows a value that did not come from the latest reading. Polling starts as soon as the integration is set up and repeats at the update interval; if Eleven Energy rate-limits it (HTTP 429), the next poll waits as long as its `Retry-After` asks, up to 5 minutes. <!-- FC-POLL-01 FC-POLL-02 FC-TIME-04 -->
+An entity never shows a value that did not come from the latest reading of its own inverter: a reading that names a different device than the one asked for is refused and counts as a failed poll. Polling starts as soon as the integration is set up and repeats at the update interval; if Eleven Energy rate-limits it (HTTP 429), even while reading a newly found inverter, nothing more is asked until its `Retry-After` has passed, up to 5 minutes. <!-- FC-POLL-01 FC-POLL-02 FC-TIME-04 FC-DISC-08 -->
 
 * If **3 polls in a row** fail for an inverter (about 45 seconds at the default interval), all of its entities become **unavailable** rather than showing stale values; they recover on the next successful poll. A reading the integration fails to process counts as a failed poll. A rejected credential makes them unavailable immediately. <!-- FC-AVAIL-01 FC-AVAIL-02 FC-AUTH-06 -->
 * While the inverter reports itself **offline** (`online: false`), its live readings are unavailable. Online, Status, Firmware Version, API Connection and the nameplate ratings stay available, since they are what explains the outage. <!-- FC-AVAIL-03 -->
@@ -160,9 +162,9 @@ An entity never shows a value that did not come from the latest reading. Polling
 * When the integration stops - unload, reload or a failed unload - every entity goes unavailable first. <!-- FC-AVAIL-04 FC-LIFE-04 -->
 * The **Update Interval** entity stays usable throughout, and **API Connection** says whether polling works. <!-- FC-AVAIL-05 FC-ENT-10 -->
 * A field that is **null or missing** from a reading reads as *unknown*; the previous value is never carried over. The nameplate ratings are the exception: they describe the machine and keep their value. <!-- FC-VAL-03 FC-ENT-05 -->
-* A numeric sensor only ever reports a finite number. Anything else the API sends for it (text, NaN, a boolean) reads as *unknown*, with one warning in the log. <!-- FC-VAL-01 -->
+* A numeric sensor only ever reports a finite number. Anything else the API sends for it (text, NaN, a boolean) reads as *unknown*, with one warning in the log. So does a text value longer than the 255 characters a Home Assistant state can hold. <!-- FC-VAL-01 -->
 * Binary sensors only accept unambiguous values (`true`/`false`, `on`/`off`, `yes`/`no`, `1`/`0`); anything else reads as *unknown*. They are *unknown* until the first reading arrives. <!-- FC-VAL-02 -->
-* **Energy counters** (every *Today* sensor and any lifetime counter) never report a drop the Energy dashboard would misread. Home Assistant books any drop of 10 % or more as a meter reset, so one glitchy reading of 0 would otherwise double the day's figures. A lower reading reads *unknown* until the next one confirms it: a second lower reading that is a real reset (the daily counter at midnight, in any time zone) is accepted, a small correction holds the previous value, and a negative value is never shown. This is judged against the value before a restart too. <!-- FC-VAL-04 FC-VAL-05 FC-TIME-02 FC-TIME-03 -->
+* **Energy counters** (every *Today* sensor and any lifetime counter) never report a drop the Energy dashboard would misread. Home Assistant books any drop of 10 % or more as a meter reset, so one glitchy reading of 0 would otherwise double the day's figures. A lower reading reads *unknown* until the next one confirms it: a drop of 10 % or more is accepted as a real reset (the daily counter at midnight, in any time zone) only when the reading straight after it is such a drop too, a smaller drop is a correction and holds the previous value, and a negative value is never shown. This is judged against the value before a restart too. <!-- FC-VAL-04 FC-VAL-05 FC-TIME-02 FC-TIME-03 -->
 
 ## Repairs and notifications
 
@@ -312,7 +314,7 @@ Both can run side by side while you switch over, but don't let two integrations 
 
 ### Download diagnostics (recommended)
 
-From **Settings > Devices & services > Eleven Energy Plus**, open the three-dot menu and choose **Download diagnostics**. The JSON file contains the integration version, the entry's options, how it connects (sign-in or API token), the repair issues currently raised, what the integration knows about each inverter (model, phases, trackers, batteries, availability, whether it is offline or missing, the last successful poll, and any list items it had to ignore) and the most recent raw API responses. The API token, sign-in tokens, serial numbers, device ids, and any address, postcode, coordinates, email or phone number are redacted, so it is safe to attach to a public bug report. <!-- FC-DIAG-01 FC-DIAG-02 FC-DIAG-03 FC-DIAG-04 -->
+From **Settings > Devices & services > Eleven Energy Plus**, open the three-dot menu and choose **Download diagnostics**. The JSON file contains the integration version, the entry's options, how it connects (sign-in or API token), the repair issues currently raised, what the integration knows about each inverter (model, phases, trackers, batteries, availability, whether it is offline or missing, the last successful poll, and any list items it had to ignore) and the most recent raw API responses. The API token, sign-in tokens, serial numbers, device ids, any address, postcode, coordinates, email or phone number, network identifiers (IP and MAC addresses, Wi-Fi network names, IMEI and SIM numbers) and electricity or gas meter numbers (MPAN, MPRN) are redacted, so it is safe to attach to a public bug report. <!-- FC-DIAG-01 FC-DIAG-02 FC-DIAG-03 FC-DIAG-04 -->
 
 ### Turning on debug logging
 

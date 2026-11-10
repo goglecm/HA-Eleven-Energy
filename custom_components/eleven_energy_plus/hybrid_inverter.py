@@ -81,6 +81,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
+    MAX_LENGTH_STATE_STATE,
     EntityCategory,
     UnitOfApparentPower,
     UnitOfElectricCurrent,
@@ -621,6 +622,12 @@ def _infer_meta(path: str, value: Any) -> dict[str, Any] | None:
     return None
 
 
+def device_card_name(label: str, ordinal: int) -> str:
+    """Return the device card name for ``label``; ``ordinal`` tells namesakes apart."""
+    name = f"Eleven Energy Plus {label}"
+    return name if ordinal == 1 else f"{name} ({ordinal})"
+
+
 def item_index(item: dict[str, Any]) -> int | None:
     """Return a list item's own ``index`` field, or ``None`` without a usable one.
 
@@ -732,10 +739,15 @@ class TotalIncreasingGuard:
     * a reading at or above the last published value is published;
     * a negative reading is never published;
     * the first reading below the last published value reads unknown;
-    * a second consecutive lower reading is a genuine reset when it is at
-      most 90 % of the last published value (a daily counter at midnight),
-      and is published; otherwise it is a small correction, and the last
-      published value is held until the counter passes it again.
+    * a reading at most 90 % of the last published value (a daily counter
+      at midnight) is a genuine reset only when the reading before it was
+      such a drop too; then it is published;
+    * any other lower reading is a small correction: the last published
+      value is held until the counter passes it again.
+
+    A reset is confirmed by its own next reading only: a held correction or
+    a small dip before a one-off drop to zero must not count as that
+    confirmation, or the drop would be booked as a reset.
 
     ``reference`` is the last published value; it is seeded from the state
     restored after a restart, so the first reading after one is judged too.
@@ -744,7 +756,10 @@ class TotalIncreasingGuard:
     def __init__(self) -> None:
         """Start with nothing published."""
         self.reference: float | None = None
+        # The previous reading was below the reference (withheld or held).
         self._pending_decrease = False
+        # The previous reading was a reset-sized drop, withheld.
+        self._pending_reset = False
 
     def judge(self, value: float) -> tuple[float | None, str | None]:
         """Return ``(value to publish, problem)`` for a new reading.
@@ -757,15 +772,18 @@ class TotalIncreasingGuard:
         reference = self.reference
         if reference is None or value >= reference:
             self.reference = value
-            self._pending_decrease = False
+            self._pending_decrease = self._pending_reset = False
             return value, None
-        if not self._pending_decrease:
-            self._pending_decrease = True
-            return None, "decrease"
-        if value <= reference * _COUNTER_RESET_FRACTION:
+        resets = value <= reference * _COUNTER_RESET_FRACTION
+        if resets and self._pending_reset:
             self.reference = value
-            self._pending_decrease = False
+            self._pending_decrease = self._pending_reset = False
             return value, None
+        first = not self._pending_decrease
+        self._pending_decrease = True
+        self._pending_reset = resets
+        if first or resets:
+            return None, "decrease"
         return reference, None
 
     def restore(self, value: float) -> None:
@@ -803,6 +821,7 @@ class HybridInverter:
         *,
         model: dict[str, Any] | None = None,
         state: dict[str, Any] | None = None,
+        ordinal: int = 1,
     ) -> None:
         """Create an inverter wrapper and its curated entities.
 
@@ -826,13 +845,17 @@ class HybridInverter:
         :param state: the first device reading, taken during discovery.
             Decides how many battery entity sets exist and drives the
             registry migration of older positional entities.
+        :param ordinal: 2 or more when another inverter on the site already
+            has this label; the device card name carries it so the two can
+            be told apart (see :func:`device_card_name`).
         """
         self.type = "hybridinverter"
         self.device_id = device_id
         self.device_label = device_name
+        self.ordinal = ordinal
         self.device_info = DeviceInfo(
             identifiers={(DOMAIN, self.device_id)},
-            name=f"Eleven Energy Plus {device_name}",
+            name=device_card_name(device_name, ordinal),
             manufacturer="Eleven Energy",
             model=device_name,
             serial_number=device_serial_number,
@@ -910,7 +933,7 @@ class HybridInverter:
     @property
     def display_name(self) -> str:
         """Return the name of this inverter's device card."""
-        return f"Eleven Energy Plus {self.device_label}"
+        return device_card_name(self.device_label, self.ordinal)
 
     @property
     def model_known(self) -> bool:
@@ -1082,9 +1105,10 @@ class HybridInverter:
             return self._create_binary_sensor(path, meta, auto_discovered=auto_discovered)
         return self._create_sensor(path, meta, auto_discovered=auto_discovered)
 
-    def _create_phase_entities(self, group: str) -> None:
+    def _create_phase_entities(self, group: str) -> list[InverterSensorEntity]:
         """Create per-phase power, voltage and current entities for ``group``."""
         settings = _PHASE_GROUPS[group]
+        created: list[InverterSensorEntity] = []
         for phase in _PHASES:
             for field, field_meta in _PHASE_FIELDS.items():
                 meta = {
@@ -1098,7 +1122,8 @@ class HybridInverter:
                     "icon": field_meta.get("icon", settings["icon"]),
                     "category": field_meta.get("category", settings["category"]),
                 }
-                self._create_sensor(f"{group}.phases.{phase}.{field}", meta)
+                created.append(self._create_sensor(f"{group}.phases.{phase}.{field}", meta))
+        return created
 
     def _create_indexed_entities(
         self, list_path: str, index: int
@@ -1253,12 +1278,42 @@ class HybridInverter:
                 type(payload).__name__,
             )
             return
+        if self.discovery_state is None:
+            self._complete_hardware(payload)
         self._seen_paths = set()
         self._walk(payload, "")
         self._process_indexed_lists(payload)
         self._process_model(payload.get("model"))
         self._clear_unseen()
         self._set_offline(parse_bool(payload.get("online")) is False)
+
+    def _complete_hardware(self, reading: dict[str, Any]) -> None:
+        """Learn the hardware from the first reading when discovery could not.
+
+        An inverter whose discovery read failed is built from its listing
+        alone. Without a ``model`` block there, which phase and tracker
+        entities it needs is unknown; its first reading settles that, as
+        discovery would have, and the entities are registered at once.
+        """
+        self.discovery_state = reading
+        model = reading.get("model")
+        if self.model_known or not isinstance(model, dict) or not model:
+            return
+        self.model = dict(model)
+        created: list[InverterSensorEntity] = []
+        if self.three_phase:
+            for group in _PHASE_GROUPS:
+                created.extend(self._create_phase_entities(group))
+        for index in range(1, self.mppt_count + 1):
+            created.extend(self._create_indexed_entities("pv.mppts", index))
+        _LOGGER.info(
+            "Eleven Energy Plus learnt the hardware of device %s from its "
+            "first reading (%s phase, %d MPPT)",
+            self.device_id,
+            3 if self.three_phase else 1,
+            self.mppt_count,
+        )
+        self.controller.add_entities("sensor", created)
 
     def _clear_unseen(self) -> None:
         """Make every entity the latest reading did not supply unknown."""
@@ -1676,7 +1731,11 @@ class InverterSensorEntity(_InverterEntityMixin, RestoreSensor):
         value: Any
         if self._numeric:
             value = coerce_finite_number(new_state)
-        elif isinstance(new_state, (dict, list)):
+        elif isinstance(new_state, (dict, list)) or (
+            # Home Assistant would replace it with unknown and log an error
+            # on every change.
+            isinstance(new_state, str) and len(new_state) > MAX_LENGTH_STATE_STATE
+        ):
             value = None
         else:
             value = new_state

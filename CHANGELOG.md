@@ -5,16 +5,33 @@ captured here. Versions correspond to the `version` field in
 `custom_components/eleven_energy_plus/manifest.json`, and the format roughly
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 2.0.1 - 2026-11-10
 
-A review of the parts the 2.0.0 audit did not harden - the lifecycle, the
-flows, diagnostics, sign-in and every point where two things can overlap -
-found eight more defects (`D35`-`D42` in
-[`tests/DEFECTS.md`](tests/DEFECTS.md)), each fixed test-first with its tests
-proven to fail on the commit that had it.
+Two reviews after 2.0.0 - of the parts its audit did not harden (the
+lifecycle, the flows, diagnostics, sign-in and every point where two things
+can overlap), then of the whole system for edge cases nobody had considered -
+found sixteen more defects in the integration (`D35`-`D42`, `D44`-`D51` in
+[`tests/DEFECTS.md`](tests/DEFECTS.md)) and one in the test tooling (`D43`).
+Each was fixed test-first, with its tests proven to fail on the commit that
+had it. Verified on Home Assistant 2026.3.4, 2026.10.4 and 2026.11.1.
+
+### Changed
+
+- **Inverters are never given the same name** (D49). Two inverters of the
+  same model, or any two under the device-label override, used to share a
+  device name, so the action's Inverter field and the repair texts could
+  not tell them apart. The second is now numbered ("Eleven Energy Plus
+  Mediterranean Sea 12 (2)"); a name set in Home Assistant still wins.
 
 ### Fixed
 
+- **An energy counter could book a false meter reset** (D44). After a
+  correction that was held, or a small dip, a one-off glitch to zero was
+  taken as the confirmation of a reset, so the Energy dashboard counted the
+  day twice. A reset is now confirmed only by the reading straight after it.
+- **A reading could be shown on the wrong inverter** (D45): a device reading
+  naming another device was applied to the one asked for. It is now refused
+  and counts as a failed poll.
 - **A device id could address another device** (D42). Ids from the site
   listing were used unencoded in request paths, so an id such as `x/../b`
   would have read, and sent work modes to, inverter `b`. Ids are now encoded
@@ -38,6 +55,30 @@ proven to fail on the commit that had it.
 - After a failed unload, **diagnostics reported the stopped controller as
   loaded** (D39) and **devices could not be deleted** although nothing polls
   the site (D41).
+- **Reading a newly found inverter** (D46): a rejected credential there
+  escaped the poll cycle as an unexpected error, and HTTP 429 there or during
+  setup was ignored, so the API was asked again straight away. Both now
+  stop the cycle as they do everywhere else.
+- **An inverter that could not be read when it was found never learnt its
+  hardware** (D50) when its listing had no `model` block: its tracker
+  readings were ignored and its phases left uncurated until a restart. Its
+  first reading now completes it.
+- **A text value longer than 255 characters** made Home Assistant log an
+  error on every change (D47); it now reads unknown with one warning.
+- **A command failure not tied to an inverter was never cleared** (D48);
+  the next successful command clears it.
+- **Diagnostics now also redact network identifiers and meter numbers**
+  (D51): IP and MAC addresses, Wi-Fi network names, IMEI and SIM numbers,
+  MPAN and MPRN.
+
+### Tests
+
+- Under pytest-xdist the functional-coverage gate was not applied and each
+  worker overwrote the report (D43); the controller process now merges the
+  workers' markers and applies the gate.
+- Four log assertions matched any record containing a word, which asyncio's
+  slow-task warnings (they carry the test's name) satisfied on a loaded
+  machine; they now check the logger too.
 
 ### Documentation
 
