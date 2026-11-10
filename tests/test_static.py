@@ -16,7 +16,8 @@ from typing import Any
 import pytest
 import yaml
 
-from custom_components.eleven_energy_plus import const, hybrid_inverter
+from custom_components.eleven_energy_plus import const, hybrid_inverter, services
+from custom_components.eleven_energy_plus.const import ErrorKind
 from custom_components.eleven_energy_plus.device_action import ACTION_TYPES
 from custom_components.eleven_energy_plus.services import SERVICE_FIELDS
 
@@ -41,6 +42,7 @@ def services_yaml() -> dict[str, Any]:
 class TestManifest:
     """The manifest carries what HA 2026.11, hassfest and the Marketplace expect."""
 
+    @pytest.mark.covers("FC-STATIC-04")
     def test_manifest_fields(self) -> None:
         manifest = _load_json(PACKAGE / "manifest.json")
         assert manifest["domain"] == const.DOMAIN
@@ -55,6 +57,7 @@ class TestManifest:
         assert "my" not in manifest["dependencies"]
         assert "device_automation" in manifest["dependencies"]
 
+    @pytest.mark.covers("FC-STATIC-04")
     def test_hacs_json(self) -> None:
         hacs = _load_json(ROOT / "hacs.json")
         assert hacs["name"] == "Eleven Energy Plus"
@@ -68,9 +71,11 @@ class TestManifest:
 class TestServicesYaml:
     """``services.yaml`` follows hassfest's current rules."""
 
+    @pytest.mark.covers("FC-STATIC-01")
     def test_same_services_as_code(self, services_yaml: dict[str, Any]) -> None:
         assert set(services_yaml) == set(SERVICE_FIELDS)
 
+    @pytest.mark.covers("FC-STATIC-01")
     def test_no_target_declared(self, services_yaml: dict[str, Any]) -> None:
         """hassfest refuses device filters on target; a target would also be required."""
         for service, definition in services_yaml.items():
@@ -104,6 +109,7 @@ class TestServicesYaml:
                 else:
                     assert (number["min"], number["max"]) == (0, 100), field
 
+    @pytest.mark.covers("FC-STATIC-01")
     def test_no_response_key(self, services_yaml: dict[str, Any]) -> None:
         """hassfest rejects ``response``; response support is declared in code."""
         for service, definition in services_yaml.items():
@@ -124,6 +130,7 @@ class TestServicesYaml:
 class TestTranslations:
     """Every key the code can surface has an English string."""
 
+    @pytest.mark.covers("FC-STATIC-02")
     def test_services_and_fields(
         self, translations: dict[str, Any], services_yaml: dict[str, Any]
     ) -> None:
@@ -141,13 +148,15 @@ class TestTranslations:
         assert set(automation["extra_fields"]) == all_fields
 
     def test_exceptions_used_by_services(self, translations: dict[str, Any]) -> None:
-        source = (PACKAGE / "services.py").read_text(encoding="utf-8")
-        keys = set(re.findall(r'translation_key="([a-z_]+)"', source))
-        assert keys == {"not_loaded", "invalid_request", "work_mode_failed"}
+        """Each error kind raises its own translated message naming the action."""
+        keys = [key for _exception, key in services._RAISED.values()]
+        assert len(keys) == len(set(keys)) == len(ErrorKind), "one message per error kind"
+        assert set(services._RAISED) == set(ErrorKind)
         for key in keys:
             message = translations["exceptions"][key]["message"]
             assert "{service}" in message
 
+    @pytest.mark.covers("FC-STATIC-02")
     def test_config_steps_and_menus(self, translations: dict[str, Any]) -> None:
         steps = translations["config"]["step"]
         for step in ("user", "token", "reauth_account", "reauth_confirm", "reconfigure"):
@@ -165,10 +174,12 @@ class TestTranslations:
             "user_rejected_authorize",
         ):
             assert reason in aborts
-        for error in ("cannot_connect", "invalid_auth", "unknown"):
-            assert error in translations["config"]["error"]
-            assert error in translations["options"]["error"]
+        for outcome in ("cannot_connect", "invalid_auth", "no_inverters", "different_site", "unknown"):
+            assert outcome in translations["config"]["error"], "a token is refused with a form error"
+            assert outcome in aborts, "a sign-in is refused by ending the flow"
+        assert set(translations["options"]["error"]) == {"poll_interval_invalid", "label_invalid"}
 
+    @pytest.mark.covers("FC-STATIC-02")
     def test_entity_translation_keys(self, translations: dict[str, Any]) -> None:
         sensors = translations["entity"]["sensor"]
         binary = translations["entity"]["binary_sensor"]
@@ -184,6 +195,7 @@ class TestTranslations:
                 assert "{phase}" in sensors[f"{group}_phase_{field}"]["name"]
         for meta in hybrid_inverter._RATING_FIELDS.values():
             assert meta["translation_key"] in sensors
+        assert "api_connection" in binary
         assert "poll_interval" in translations["entity"]["number"]
 
     def test_translation_keys_are_valid(self, translations: dict[str, Any]) -> None:

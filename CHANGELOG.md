@@ -10,8 +10,99 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Brings the integration up to Home Assistant 2026.11 (Marketplace, hassfest
 rules, DeviceInfo dataclass, unit enums, entity lifecycle), ports the useful
 work from the 28 commits upstream (`iPeel/HA-Eleven-Energy` 2.0 - 2.2, up to
-`78de8d1`) and hardens every path that can control the inverter. Verified on
-Home Assistant 2026.3.4, 2026.10.4 and 2026.11.1; hassfest (HA dev) is clean.
+`78de8d1`; see [UPSTREAM.md](UPSTREAM.md)), hardens every path that can
+control the inverter, and closes the 34 defects of a test-first audit
+(`D01`-`D34`, each with its failing-then-passing tests in
+[`tests/DEFECTS.md`](tests/DEFECTS.md)). Verified on Home Assistant 2026.3.4,
+2026.10.4 and 2026.11.1; hassfest (HA dev) is clean.
+
+### Hardened (fault-intolerant audit)
+
+Values and availability:
+
+- A field that becomes null or disappears from a reading reads unknown
+  instead of keeping its last value for ever (D11).
+- While the inverter reports `online: false`, its telemetry is unavailable;
+  Online, Status, Firmware Version, API Connection and the ratings stay
+  available (D12).
+- Energy counters (`total_increasing`) never report a false meter reset:
+  a lower reading is held as unknown until a second one confirms a real
+  reset (at least a 10 % drop, as at midnight); a small correction holds
+  the previous value; negatives are never shown (D13). The judgement uses
+  the value from before a restart, and the poller no longer re-reads at
+  start-up what discovery has just read, which would have confirmed a
+  glitch (D33).
+- MPPT and battery items with no usable index, a repeated index or a
+  tracker index the model does not have are ignored and reported once
+  (log and diagnostics) instead of silently (D14).
+- A reading that fails to process counts as a failed poll rather than a
+  success (D02); an inverter missing from two site listings goes
+  unavailable and can be deleted (D04); shutting down, even through a
+  failed unload, makes every entity unavailable first (D10).
+- An inverter found at runtime gets its Update Interval entity straight
+  away (D03).
+
+Credentials and flows:
+
+- An API token rejected by mistake recovers on its own: it is re-tested
+  every 10 minutes, and on success polling resumes and the reauthentication
+  prompt is withdrawn (D01).
+- Every credential - setup, Reconfigure and reauthentication, token or
+  sign-in - is checked with the API before it is stored: a site with no
+  hybrid inverter is refused (D18), so is a credential for a different site
+  than the existing entry's (D19), and a sign-in is now probed like a token
+  (D20).
+- The device-label override is limited to 64 printable characters (D21);
+  the options form refuses a NaN or fractional interval instead of silently
+  saving the default or truncating it (D32).
+
+Actions and polling:
+
+- `Retry-After` is understood as an HTTP date as well as seconds, and a
+  rate-limited poll defers the next one (D05).
+- Ambiguous booleans are refused everywhere - the controller no longer
+  guesses, and the action schema no longer accepts any number (`2`) as
+  true (D06). A stored poll interval is parsed strictly and an unusable one
+  is reported once; infinity no longer crashes the poller (D07). The Update
+  Interval entity refuses NaN instead of crashing (D30).
+- Each failure kind raises its own error and message, and is reported as
+  `error_kind` in the response: a superseded command is no longer called
+  an invalid request (D08), a rejected credential and a shutdown are no
+  longer "failed" (D16), and an unexpected error is contained, logged and
+  reported as `internal_error` instead of escaping raw (D09).
+
+Fault reporting (new):
+
+- Repair issues, each with a one-time notification, for an unreachable
+  cloud (15 minutes), an offline inverter (15 minutes), an inverter no
+  longer on the site, a failed work-mode command, and the optimiser left
+  off for 24 hours after a work mode (persisted across restarts; a clock
+  moving backwards restarts it). A rejected credential adds a notification
+  to Home Assistant's reauthentication prompt. All are withdrawn when the
+  fault clears and removed with the entry.
+- **API Connection** diagnostic binary sensor per inverter: whether the last
+  attempt to read it from the cloud worked. It stays available when
+  everything else is not.
+
+Diagnostics and housekeeping:
+
+- Diagnostics redact address, postcode, coordinates, email and phone (D23),
+  log a failed version lookup instead of swallowing it (D31), have the same
+  shape with or without a loaded entry (D34), and report the active issues,
+  offline / missing state, last successful poll and ignored list items.
+- `SERVICE_NAMES` is no longer re-exported for tests (D22); removing the
+  entry deletes its stored state and issues.
+- Typing is strict-clean on Home Assistant 2026.3, 2026.10 and 2026.11 (D15,
+  D17, D25, D28); unused translation keys removed (D26); lint clean (D27);
+  the test guard now also fails on Home Assistant's "not strictly
+  increasing" and negative-counter warnings (D29); the PKCE challenge is
+  proven to match the verifier (D24).
+- The percent unit is the plain `"%"` string on every version, which removed
+  the version shim.
+- Test suite: one test file per module, 100 % line and branch coverage with
+  no exclusions, a functional-coverage model with a gate, defect sweeps
+  re-proved red against the pre-audit code (`tests/tools/check_red.py`),
+  hypothesis fuzzing, mutation testing, vulture.
 
 ### Breaking
 
@@ -116,7 +207,7 @@ Home Assistant 2026.3.4, 2026.10.4 and 2026.11.1; hassfest (HA dev) is clean.
   the integration loader.
 - **Changing the token reloaded twice** (two update-listener calls racing);
   credential changes now reload exactly once.
-- Options-flow errors showed raw keys (no `options.error` translations).
+- The options form reports invalid input with translated field errors.
 - A non-object site payload crashed setup instead of retrying; malformed site
   and device payloads are now validated.
 - A numeric sensor receiving text or NaN raised inside Home Assistant on
@@ -130,9 +221,9 @@ Home Assistant 2026.3.4, 2026.10.4 and 2026.11.1; hassfest (HA dev) is clean.
 ### Changed
 
 - Compatible with Home Assistant 2026.11: `DeviceInfo` built by keyword only,
-  `UnitOfRatio.PERCENTAGE` where available, `async_entity_id_changed` opt-in
-  on the Number entity, `entry.runtime_data`, `ConfigFlowResult`,
-  `AddConfigEntryEntitiesCallback`.
+  the percent unit without the deprecated `PERCENTAGE` name,
+  `async_entity_id_changed` opt-in on every entity, `entry.runtime_data`,
+  `ConfigFlowResult`, `AddConfigEntryEntitiesCallback`.
 - README: Marketplace (2026.11+) and HACS (2026.3-2026.10) installation, the
   false "HACS Default" badge removed, release process documented.
 - `actions/checkout@v7` in workflows; `pytest-homeassistant-custom-component`

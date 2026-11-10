@@ -1,13 +1,26 @@
-# Development dependencies for running the test suite.
+# Development dependencies, pinned to the latest stable releases.
 # Install with:
 #   python3.14 -m venv .venv
 #   .venv/bin/pip install -r dev-requirements.txt
 #
-# The ``pytest-homeassistant-custom-component`` package pulls in Home Assistant
-# core, pytest, the full HA test helper stack (aioclient_mock, MockConfigEntry,
-# etc.), pytest-asyncio, pytest-cov and other commonly-needed plugins. Each
-# release pins one Home Assistant version; 0.13.375 pins HA 2026.10.4.
+# Dependabot (.github/dependabot.yml) proposes updates weekly.
 #
-# The minimum supported Home Assistant (2026.3, see hacs.json) is exercised in
-# CI with pytest-homeassistant-custom-component==0.13.320 (HA 2026.3.4).
-pytest-homeassistant-custom-component>=0.13.375
+# ``pytest-homeassistant-custom-component`` pulls in Home Assistant core,
+# pytest, the HA test helper stack (aioclient_mock, MockConfigEntry, ...),
+# pytest-asyncio, pytest-cov and pytest-freezer. Each release pins one Home
+# Assistant version; 0.13.375 pins HA 2026.10.4. The minimum supported Home
+# Assistant (2026.3, see hacs.json) is exercised in CI with 0.13.320
+# (HA 2026.3.4), and a canary job runs the newest Home Assistant through
+# tests/compat/run_newest_ha.py.
+pytest-homeassistant-custom-component==0.13.375
+
+# Property-based fuzzing of the payload walker, value parsers and schemas.
+hypothesis==6.170.15
+
+# Static analysis (CI: .github/workflows/lint.yaml).
+ruff==0.17.4
+mypy==2.4.1
+vulture==2.16
+
+# Mutation testing of the safety-critical code (weekly CI job).
+mutmut==3.8.1

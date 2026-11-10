@@ -29,7 +29,6 @@ async def async_setup_entry(
     entities: list[Any] = []
     for inverter in controller.devices.values():
         entities.extend(inverter.binary_sensor_entities.values())
-    if entities:
-        async_add_entities(entities)
+    async_add_entities(entities)
 
     controller.complete_platform_setup("binary_sensor", async_add_entities)

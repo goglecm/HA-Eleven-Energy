@@ -1,8 +1,8 @@
 """Eleven Energy hybrid-inverter device representation.
 
 This module owns the per-device side of the integration: one
-:class:`HybridInverter` instance per inverter discovered by
-:meth:`Controller.poll_site`, plus the two entity classes
+:class:`HybridInverter` instance per inverter found in the site listing
+(see ``Controller._reconcile_site``), plus the two entity classes
 (:class:`InverterSensorEntity` / :class:`InverterBinarySensorEntity`)
 that make their values visible to Home Assistant.
 
@@ -26,6 +26,8 @@ The inverter has three streams of entities:
   List items (``pv.mppts``, ``battery.batteries``) are keyed by each item's
   own ``index`` field rather than its position, so a payload that ever omits
   one entry cannot shift another tracker's or battery's readings onto it.
+  An item whose index is missing, duplicated or outside the hardware's set
+  is ignored and reported once (log and diagnostics), never guessed at.
 
 * **Auto-discovered** - anything else the API returns that
   :func:`_infer_meta` can heuristically classify (numeric, boolean, string).
@@ -34,32 +36,48 @@ The inverter has three streams of entities:
   :data:`~.const.MAX_DYNAMIC_ENTITIES_PER_DEVICE`, and named from the dotted
   JSON path via :func:`_humanise_path`.
 
-Every entity follows its inverter's availability (see
-:meth:`HybridInverter.record_poll_failure`) and validates the values it is
-handed: numeric sensors only ever report finite numbers (anything else reads
-as *unknown*), and binary sensors only accept unambiguous booleans.
+Plus one diagnostic **API Connection** binary sensor, which says whether the
+last attempt to read this inverter from the cloud worked. It stays available
+when everything else is not, because it is the explanation.
 
-The walker (:meth:`_walk`) is deliberately defensive: every recursion and
-every leaf write is wrapped in ``try/except`` so a single malformed field
-cannot poison the entire update, and ``list`` values are capped at
-:data:`_MAX_LIST_EXPANSION` entries.
+What an entity shows, in order of precedence:
+
+* *unavailable* when its inverter is: after
+  :data:`~.const.UNAVAILABLE_AFTER_FAILED_POLLS` failed polls, while the
+  credential is rejected, once the inverter has left the site listing, and
+  after shutdown. Telemetry is also unavailable while the inverter reports
+  ``online: false``; Online, Status, Firmware Version and the nameplate
+  ratings stay available, since they are what explains the outage.
+* *unknown* when the latest reading has no usable value for it - the field
+  is null, absent, or not a valid value of its kind. A value is never
+  carried over from an older reading.
+* otherwise the value. Numeric sensors only report finite numbers, binary
+  sensors only unambiguous booleans, and ``total_increasing`` counters never
+  report a decrease Home Assistant would misread (see
+  :class:`TotalIncreasingGuard`).
+
+The walker (:meth:`_walk`) is deliberately defensive: every leaf is handled
+inside its own ``try/except`` so a single malformed field cannot poison the
+entire update, ``list`` values are capped at :data:`_MAX_LIST_EXPANSION`
+entries, and nesting at :data:`_MAX_DEPTH` levels.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from datetime import datetime
 import logging
-import math
 import re
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
-    SensorEntity,
     SensorStateClass,
 )
 from homeassistant.const import (
@@ -73,9 +91,10 @@ from homeassistant.const import (
     UnitOfReactivePower,
     UnitOfTemperature,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity import generate_entity_id
+from homeassistant.helpers.entity import Entity, generate_entity_id
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
@@ -83,11 +102,34 @@ from .const import (
     PERCENT,
     UNAVAILABLE_AFTER_FAILED_POLLS,
 )
+from .parsing import coerce_finite_number, finite_float, parse_bool
 
 if TYPE_CHECKING:
     from .controller import Controller
 
 _LOGGER = logging.getLogger(__name__)
+
+# Key of the API Connection binary sensor in ``binary_sensor_entities``. The
+# walker skips keys starting with ``_``, so no API field can collide with it.
+API_CONNECTION_PATH = "_api_connection"
+
+# Paths that stay available while the inverter reports ``online: false``:
+# they describe the machine and its connection rather than live telemetry.
+_OFFLINE_EXEMPT_PATHS: frozenset[str] = frozenset(
+    {"online", "status", "firmwareVersion", API_CONNECTION_PATH}
+)
+
+# Paths whose value does not come from each reading, so a reading that lacks
+# them must not clear them: the nameplate ratings (``model.*``) and the API
+# Connection sensor.
+_STATIC_PATH_PREFIXES: tuple[str, ...] = ("model.", API_CONNECTION_PATH)
+
+# A later reading lower than the last published value of a total_increasing
+# counter is a genuine reset only if it is at most this fraction of it -
+# Home Assistant's recorder applies the same 10 % rule. Smaller drops are
+# glitches or corrections, which the recorder would log as "not strictly
+# increasing".
+_COUNTER_RESET_FRACTION = 0.9
 
 
 # Keys we never want to expose as entities (identifiers and type tags).
@@ -115,12 +157,13 @@ _LOWERCASE_STRING_PATHS: frozenset[str] = frozenset(
 # entities.
 _MAX_LIST_EXPANSION = 32
 
+# Objects and lists nested deeper than this are logged once and ignored. Real
+# readings are four levels deep at most; the cap keeps a pathological payload
+# from exhausting the stack.
+_MAX_DEPTH = 12
+
 # Phase labels the API uses under ``grid.phases`` / ``system.phases``.
 _PHASES: tuple[str, ...] = ("L1", "L2", "L3")
-
-# Strings accepted as booleans by :func:`parse_bool`.
-_TRUE_STRINGS: frozenset[str] = frozenset({"true", "on", "yes", "1"})
-_FALSE_STRINGS: frozenset[str] = frozenset({"false", "off", "no", "0"})
 
 
 # Hand-tuned definitions for the well-known fields. Keys are dotted JSON paths.
@@ -430,53 +473,6 @@ def _humanise_path(path: str) -> str:
     return " ".join(parts)
 
 
-def coerce_finite_number(value: Any) -> int | float | None:
-    """Return ``value`` as a finite number, or ``None`` if it isn't one.
-
-    Booleans are rejected (``True`` is not ``1 kW``), numeric strings are
-    parsed, and NaN / infinity are treated as missing data rather than passed
-    on to Home Assistant, which would either reject them or record nonsense
-    statistics.
-    """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, str):
-        try:
-            parsed = float(value.strip())
-        except ValueError:
-            return None
-        return parsed if math.isfinite(parsed) else None
-    return None
-
-
-def parse_bool(value: Any) -> bool | None:
-    """Parse an API value as a boolean, or ``None`` when it is ambiguous.
-
-    ``bool("false")`` is ``True``, which is exactly the wrong answer for a
-    connectivity sensor, so strings and numbers are interpreted explicitly
-    and anything unrecognised reads as unknown instead of guessing.
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if value == 1:
-            return True
-        if value == 0:
-            return False
-        return None
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in _TRUE_STRINGS:
-            return True
-        if lowered in _FALSE_STRINGS:
-            return False
-    return None
-
-
 def _infer_meta(path: str, value: Any) -> dict[str, Any] | None:
     """Best-effort meta dict for a JSON leaf the user hadn't predefined."""
     if value is None:
@@ -514,7 +510,7 @@ def _infer_meta(path: str, value: Any) -> dict[str, Any] | None:
         unit: str | None = None
         sensor_class: SensorDeviceClass | None = None
         state_class: SensorStateClass | None = SensorStateClass.MEASUREMENT
-        icon: str | None = None
+        icon: str  # every branch below sets it
         decimals = -1
 
         is_today_energy = "energy" in full_lower and "today" in full_lower
@@ -625,12 +621,18 @@ def _infer_meta(path: str, value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _item_index(item: dict[str, Any], position: int) -> int:
-    """Return a list item's own ``index`` field, or ``position + 1`` without one."""
+def item_index(item: dict[str, Any]) -> int | None:
+    """Return a list item's own ``index`` field, or ``None`` without a usable one.
+
+    Only a non-negative integer identifies a tracker or battery. Falling back
+    to the item's position would shift readings from one to another the
+    moment the API omits an entry, so an item without a usable index is
+    ignored (and reported) instead.
+    """
     index = item.get("index")
     if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
         return index
-    return position + 1
+    return None
 
 
 def _lookup(payload: dict[str, Any], dotted: str) -> Any:
@@ -643,24 +645,139 @@ def _lookup(payload: dict[str, Any], dotted: str) -> Any:
     return current
 
 
+@dataclass(frozen=True)
+class IgnoredItem:
+    """An item of an indexed list that was not used, and why.
+
+    ``key`` identifies the problem so it is reported once rather than on
+    every poll; ``reason`` is the human-readable explanation.
+    """
+
+    key: str
+    reason: str
+
+
+def scan_indexed_items(
+    payload: dict[str, Any] | None, list_path: str
+) -> tuple[list[tuple[int, int, dict[str, Any]]], list[IgnoredItem]]:
+    """Split an indexed list into usable ``(position, index, item)`` and ignored items.
+
+    An item is ignored when it is not an object, has no usable index, or
+    repeats an index already seen in the same list (the first one wins).
+    Items beyond :data:`_MAX_LIST_EXPANSION` are ignored as a block.
+    """
+    usable: list[tuple[int, int, dict[str, Any]]] = []
+    ignored: list[IgnoredItem] = []
+    if not isinstance(payload, dict):
+        return usable, ignored
+    items = _lookup(payload, list_path)
+    if not isinstance(items, list):
+        return usable, ignored
+    seen: set[int] = set()
+    for position, item in enumerate(items):
+        if position >= _MAX_LIST_EXPANSION:
+            ignored.append(
+                IgnoredItem(
+                    "truncated",
+                    f"more than {_MAX_LIST_EXPANSION} items; the rest are ignored",
+                )
+            )
+            break
+        if not isinstance(item, dict):
+            ignored.append(
+                IgnoredItem(
+                    f"not_object:{type(item).__name__}",
+                    f"item {position} is a {type(item).__name__}, not an object",
+                )
+            )
+            continue
+        index = item_index(item)
+        if index is None:
+            raw = item.get("index")
+            ignored.append(
+                IgnoredItem(
+                    f"no_index:{raw!r}",
+                    f"item {position} has no usable index ({raw!r})",
+                )
+            )
+            continue
+        if index in seen:
+            ignored.append(
+                IgnoredItem(
+                    f"duplicate:{index}",
+                    f"duplicate index {index}; only the first such item is used",
+                )
+            )
+            continue
+        seen.add(index)
+        usable.append((position, index, item))
+    return usable, ignored
+
+
 def indexed_items(
     payload: dict[str, Any] | None, list_path: str
 ) -> Iterator[tuple[int, int, dict[str, Any]]]:
-    """Yield ``(position, index, item)`` for dict items of a list in ``payload``."""
-    if not isinstance(payload, dict):
-        return
-    items = _lookup(payload, list_path)
-    if not isinstance(items, list):
-        return
-    for position, item in enumerate(items[:_MAX_LIST_EXPANSION]):
-        if isinstance(item, dict):
-            yield position, _item_index(item, position), item
+    """Yield ``(position, index, item)`` for the usable items of an indexed list."""
+    yield from scan_indexed_items(payload, list_path)[0]
+
+
+class TotalIncreasingGuard:
+    """Decide which readings of a ``total_increasing`` counter to publish.
+
+    Home Assistant treats a drop of 10 % or more in such a counter as a meter
+    reset and starts a new cycle, so a single glitch to zero would double the
+    day's energy on the Energy dashboard; a smaller drop is logged as "not
+    strictly increasing". Neither must reach it unless it is real:
+
+    * a reading at or above the last published value is published;
+    * a negative reading is never published;
+    * the first reading below the last published value reads unknown;
+    * a second consecutive lower reading is a genuine reset when it is at
+      most 90 % of the last published value (a daily counter at midnight),
+      and is published; otherwise it is a small correction, and the last
+      published value is held until the counter passes it again.
+
+    ``reference`` is the last published value; it is seeded from the state
+    restored after a restart, so the first reading after one is judged too.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing published."""
+        self.reference: float | None = None
+        self._pending_decrease = False
+
+    def judge(self, value: float) -> tuple[float | None, str | None]:
+        """Return ``(value to publish, problem)`` for a new reading.
+
+        ``problem`` is ``"negative"`` or ``"decrease"`` when the reading was
+        withheld, else ``None``.
+        """
+        if value < 0:
+            return None, "negative"
+        reference = self.reference
+        if reference is None or value >= reference:
+            self.reference = value
+            self._pending_decrease = False
+            return value, None
+        if not self._pending_decrease:
+            self._pending_decrease = True
+            return None, "decrease"
+        if value <= reference * _COUNTER_RESET_FRACTION:
+            self.reference = value
+            self._pending_decrease = False
+            return value, None
+        return reference, None
+
+    def restore(self, value: float) -> None:
+        """Seed the reference from the value published before a restart."""
+        if value >= 0 and (self.reference is None or value > self.reference):
+            self.reference = value
 
 
 class HybridInverter:
     """A single Eleven Energy hybrid inverter and its entity collection.
 
-    Constructed by :meth:`Controller.poll_site` for each discovered device.
+    Constructed by ``Controller._reconcile_site`` for each listed inverter.
     Two entity dictionaries are kept, both keyed by the dotted JSON path of
     the leaf the entity represents (e.g. ``pv.power``,
     ``operatingMode.workMode``, ``pv.mppts.1.power`` for MPPT index 1, or
@@ -730,18 +847,44 @@ class HybridInverter:
         self.sensor_entities: dict[str, InverterSensorEntity] = {}
         self.binary_sensor_entities: dict[str, InverterBinarySensorEntity] = {}
 
-        # Availability bookkeeping, driven by the controller's poll results.
+        # Availability bookkeeping. ``available`` follows the poll results;
+        # the other flags each make every entity unavailable on their own.
         self.available = True
         self._consecutive_failures = 0
+        self.missing = False
+        self.offline = False
+        self._shut_down = False
+        # Whether the last attempt to read this inverter worked; ``None``
+        # until the first attempt. Shown by the API Connection sensor.
+        self.api_connected: bool | None = None
+        # When a reading was last applied (UTC), for diagnostics.
+        self.last_success_at: datetime | None = None
 
-        # Remember which list paths we have already truncated so the
-        # truncation warning fires at most once per path per process.
+        # Paths that received a value from the reading being processed.
+        self._seen_paths: set[str] = set()
+        # Remember which list paths we have already truncated, and which
+        # paths were nested too deeply, so each warning fires once per path.
         self._truncated_list_paths: set[str] = set()
+        self._too_deep_paths: set[str] = set()
+        # Ignored indexed-list items, keyed ``list_path:key``, with the
+        # reason; each is logged once and listed in diagnostics.
+        self.ignored_list_items: dict[str, str] = {}
         self._dynamic_entity_count = 0
         self._dynamic_cap_warned = False
 
         for path, meta in _PREDEFINED_DEFS.items():
             self._create_entity_for(path, meta)
+
+        self._create_entity_for(
+            API_CONNECTION_PATH,
+            {
+                "kind": "binary_sensor",
+                "entity_type": "api_connection",
+                "device_class": BinarySensorDeviceClass.CONNECTIVITY,
+                "icon": "mdi:cloud-sync-outline",
+                "category": EntityCategory.DIAGNOSTIC,
+            },
+        )
 
         if self.three_phase:
             for group in _PHASE_GROUPS:
@@ -763,6 +906,11 @@ class HybridInverter:
     # ------------------------------------------------------------------
     # Hardware description
     # ------------------------------------------------------------------
+
+    @property
+    def display_name(self) -> str:
+        """Return the name of this inverter's device card."""
+        return f"Eleven Energy Plus {self.device_label}"
 
     @property
     def model_known(self) -> bool:
@@ -807,7 +955,7 @@ class HybridInverter:
             if not entity.auto_discovered
         }
 
-    def all_entities(self) -> list[InverterSensorEntity | InverterBinarySensorEntity]:
+    def all_entities(self) -> list[InverterEntity]:
         """Return every sensor and binary sensor entity of this inverter."""
         return [*self.sensor_entities.values(), *self.binary_sensor_entities.values()]
 
@@ -858,14 +1006,18 @@ class HybridInverter:
     # Entity construction
     # ------------------------------------------------------------------
 
-    def _create_entity_for(
-        self,
-        path: str,
-        meta: dict[str, Any],
-        *,
-        auto_discovered: bool = False,
-    ) -> InverterSensorEntity | InverterBinarySensorEntity:
-        """Instantiate an entity from a meta dict and stash it under ``path``.
+    def _availability_for(self, path: str) -> Callable[[], bool]:
+        """Return the availability rule for the entity at ``path``."""
+        if path == API_CONNECTION_PATH:
+            return self.is_running
+        if path in _OFFLINE_EXEMPT_PATHS or path.startswith("model."):
+            return self.is_available
+        return self.telemetry_available
+
+    def _entity_kwargs(
+        self, path: str, meta: dict[str, Any], auto_discovered: bool
+    ) -> dict[str, Any]:
+        """Return the constructor arguments both entity classes share.
 
         Curated definitions are named through translations (``translation_key``
         defaulting to ``entity_type`` lowercased, plus optional
@@ -873,7 +1025,6 @@ class HybridInverter:
         ``name`` instead, so they read sensibly without a translation for
         every possible API field.
         """
-        kind = meta.get("kind", "sensor")
         entity_type = meta["entity_type"]
         if auto_discovered:
             translation_key = None
@@ -881,8 +1032,8 @@ class HybridInverter:
         else:
             translation_key = meta.get("translation_key", entity_type.lower())
             name = None
-
-        common: dict[str, Any] = {
+        return {
+            "hass": self.hass,
             "device_info": self.device_info,
             "device_id": self.device_id,
             "entity_type": entity_type,
@@ -892,26 +1043,44 @@ class HybridInverter:
             "translation_key": translation_key,
             "translation_placeholders": meta.get("translation_placeholders"),
             "name": name,
-            "availability": self.is_available,
+            "availability": self._availability_for(path),
             "auto_discovered": auto_discovered,
         }
 
-        if kind == "binary_sensor":
-            entity: InverterSensorEntity | InverterBinarySensorEntity = (
-                InverterBinarySensorEntity(hass=self.hass, **common)
-            )
-            self.binary_sensor_entities[path] = entity
-            return entity
-
-        entity = InverterSensorEntity(
-            hass=self.hass,
+    def _create_sensor(
+        self, path: str, meta: dict[str, Any], *, auto_discovered: bool = False
+    ) -> InverterSensorEntity:
+        """Create the sensor for ``path`` and stash it in :attr:`sensor_entities`."""
+        sensor = InverterSensorEntity(
             unit_of_measurement=meta.get("unit"),
             state_class=meta.get("state_class"),
             decimals=meta.get("decimals", -1),
-            **common,
+            **self._entity_kwargs(path, meta, auto_discovered),
         )
-        self.sensor_entities[path] = entity
-        return entity
+        self.sensor_entities[path] = sensor
+        return sensor
+
+    def _create_binary_sensor(
+        self, path: str, meta: dict[str, Any], *, auto_discovered: bool
+    ) -> InverterBinarySensorEntity:
+        """Create the binary sensor for ``path`` and stash it in :attr:`binary_sensor_entities`."""
+        binary_sensor = InverterBinarySensorEntity(
+            **self._entity_kwargs(path, meta, auto_discovered)
+        )
+        self.binary_sensor_entities[path] = binary_sensor
+        return binary_sensor
+
+    def _create_entity_for(
+        self,
+        path: str,
+        meta: dict[str, Any],
+        *,
+        auto_discovered: bool = False,
+    ) -> InverterEntity:
+        """Create the entity a meta dict describes (``kind`` picks the platform)."""
+        if meta["kind"] == "binary_sensor":
+            return self._create_binary_sensor(path, meta, auto_discovered=auto_discovered)
+        return self._create_sensor(path, meta, auto_discovered=auto_discovered)
 
     def _create_phase_entities(self, group: str) -> None:
         """Create per-phase power, voltage and current entities for ``group``."""
@@ -919,7 +1088,6 @@ class HybridInverter:
         for phase in _PHASES:
             for field, field_meta in _PHASE_FIELDS.items():
                 meta = {
-                    "kind": "sensor",
                     "entity_type": f"{group}_phases_{phase}_{field}",
                     "translation_key": f"{group}_phase_{field}",
                     "translation_placeholders": {"phase": phase},
@@ -930,70 +1098,106 @@ class HybridInverter:
                     "icon": field_meta.get("icon", settings["icon"]),
                     "category": field_meta.get("category", settings["category"]),
                 }
-                self._create_entity_for(f"{group}.phases.{phase}.{field}", meta)
+                self._create_sensor(f"{group}.phases.{phase}.{field}", meta)
 
     def _create_indexed_entities(
         self, list_path: str, index: int
-    ) -> list[InverterSensorEntity | InverterBinarySensorEntity]:
+    ) -> list[InverterSensorEntity]:
         """Create the curated entities for one MPPT / battery ``index``."""
-        created: list[InverterSensorEntity | InverterBinarySensorEntity] = []
+        created: list[InverterSensorEntity] = []
         for field, field_meta in _INDEXED_LISTS[list_path].items():
             path = f"{list_path}.{index}.{field}"
-            if path in self.sensor_entities:
-                continue
             meta = {
                 **field_meta,
-                "kind": "sensor",
                 "entity_type": field_meta["entity_type"].format(index=index),
                 "translation_placeholders": {"index": str(index)},
                 "category": EntityCategory.DIAGNOSTIC,
             }
-            created.append(self._create_entity_for(path, meta))
+            created.append(self._create_sensor(path, meta))
         return created
 
     def _create_rating_entity(self, field: str) -> InverterSensorEntity:
         """Create the nameplate rating entity for ``model.<field>``."""
         rating = _RATING_FIELDS[field]
         meta = {
-            "kind": "sensor",
             "entity_type": rating["entity_type"],
             "translation_key": rating["translation_key"],
             "unit": UnitOfPower.KILO_WATT,
             "device_class": SensorDeviceClass.POWER,
-            "state_class": None,
             "decimals": 1,
             "icon": rating["icon"],
             "category": EntityCategory.DIAGNOSTIC,
         }
-        return cast(
-            InverterSensorEntity, self._create_entity_for(f"model.{field}", meta)
-        )
+        return self._create_sensor(f"model.{field}", meta)
 
     # ------------------------------------------------------------------
     # Availability
     # ------------------------------------------------------------------
 
     def is_available(self) -> bool:
-        """Return whether this inverter's data is currently trustworthy."""
-        return self.available
+        """Return whether this inverter's entities may show values at all.
+
+        False after :data:`~.const.UNAVAILABLE_AFTER_FAILED_POLLS` failed
+        polls, while the credential is rejected, once the inverter has left
+        the site listing, and after shutdown.
+        """
+        return self.available and not self.missing and not self._shut_down
+
+    def telemetry_available(self) -> bool:
+        """Return whether live telemetry may be shown (also not offline)."""
+        return self.is_available() and not self.offline
+
+    def is_running(self) -> bool:
+        """Return False once the integration has shut this inverter down."""
+        return not self._shut_down
 
     def record_poll_success(self) -> None:
         """Reset the failure counter and become available again."""
         self._consecutive_failures = 0
+        self.last_success_at = dt_util.utcnow()
+        self._set_api_connected(True)
         self._set_available(True)
 
     def record_poll_failure(self) -> None:
         """Count a failed poll; go unavailable once the threshold is reached."""
         self._consecutive_failures += 1
+        self._set_api_connected(False)
         if self._consecutive_failures >= UNAVAILABLE_AFTER_FAILED_POLLS:
             self._set_available(False)
 
     def mark_unavailable(self) -> None:
-        """Go unavailable immediately (e.g. the credential was rejected)."""
-        self._consecutive_failures = max(
-            self._consecutive_failures, UNAVAILABLE_AFTER_FAILED_POLLS
-        )
+        """Go unavailable immediately (e.g. the credential was rejected).
+
+        Only the next successful poll makes the inverter available again.
+        """
+        self._set_api_connected(False)
         self._set_available(False)
+
+    def set_missing(self, missing: bool) -> None:
+        """Record whether the inverter has left the site listing."""
+        if self.missing == missing:
+            return
+        self.missing = missing
+        _LOGGER.log(
+            logging.INFO if not missing else logging.WARNING,
+            "Eleven Energy Plus inverter %s is %s the site listing",
+            self.device_id,
+            "missing from" if missing else "back in",
+        )
+        if missing:
+            self._set_api_connected(False)
+        self._write_all_states()
+
+    def shut_down(self) -> None:
+        """Make every entity unavailable for good: nothing will update them."""
+        if self._shut_down:
+            return
+        self._shut_down = True
+        self._write_all_states()
+
+    def _set_api_connected(self, connected: bool) -> None:
+        self.api_connected = connected
+        self.binary_sensor_entities[API_CONNECTION_PATH].set_binary_value(connected)
 
     def _set_available(self, available: bool) -> None:
         if self.available == available:
@@ -1005,6 +1209,22 @@ class HybridInverter:
             self.device_id,
             "available" if available else "unavailable",
         )
+        self._write_all_states()
+
+    def _set_offline(self, offline: bool) -> None:
+        if self.offline == offline:
+            return
+        self.offline = offline
+        _LOGGER.log(
+            logging.INFO if not offline else logging.WARNING,
+            "Eleven Energy Plus inverter %s reports it is %s; its telemetry is %s",
+            self.device_id,
+            "offline" if offline else "online again",
+            "unavailable until it is back" if offline else "shown again",
+        )
+        self._write_all_states()
+
+    def _write_all_states(self) -> None:
         for entity in self.all_entities():
             entity.write_state()
 
@@ -1013,7 +1233,13 @@ class HybridInverter:
     # ------------------------------------------------------------------
 
     def update(self, payload: Any) -> None:
-        """Walk the device payload and push values into the right entities."""
+        """Apply one device reading.
+
+        Every entity whose field the reading does not supply - null, absent,
+        or its whole block absent - becomes unknown, so nothing shows a value
+        from an older reading. The nameplate ratings are static and keep
+        their value. ``online: false`` makes the telemetry unavailable.
+        """
         if not isinstance(payload, dict):
             _LOGGER.warning(
                 "Eleven Energy Plus ignoring non-object payload for device %s: %s",
@@ -1021,9 +1247,21 @@ class HybridInverter:
                 type(payload).__name__,
             )
             return
+        self._seen_paths = set()
         self._walk(payload, "")
         self._process_indexed_lists(payload)
         self._process_model(payload.get("model"))
+        self._clear_unseen()
+        self._set_offline(parse_bool(payload.get("online")) is False)
+
+    def _clear_unseen(self) -> None:
+        """Make every entity the latest reading did not supply unknown."""
+        for path, sensor in self.sensor_entities.items():
+            if path not in self._seen_paths and not path.startswith(_STATIC_PATH_PREFIXES):
+                sensor.set_native_value(None)
+        for path, binary_sensor in self.binary_sensor_entities.items():
+            if path not in self._seen_paths and not path.startswith(_STATIC_PATH_PREFIXES):
+                binary_sensor.set_binary_value(None)
 
     def _is_suppressed(self, path: str, value: Any) -> bool:
         """Return True for subtrees the generic walker must not auto-discover."""
@@ -1039,10 +1277,20 @@ class HybridInverter:
             return not self.three_phase
         return False
 
-    def _walk(self, value: Any, path: str) -> None:
-        if path in _IGNORED_PATHS:
-            return
+    def _walk(self, value: Any, path: str, depth: int = 0) -> None:
         if path and self._is_suppressed(path, value):
+            return
+
+        if isinstance(value, (dict, list)) and depth >= _MAX_DEPTH:
+            if path not in self._too_deep_paths:
+                self._too_deep_paths.add(path)
+                _LOGGER.warning(
+                    "Eleven Energy Plus ignoring %s for device %s: nested more "
+                    "than %d levels deep",
+                    path,
+                    self.device_id,
+                    _MAX_DEPTH,
+                )
             return
 
         if isinstance(value, dict):
@@ -1053,17 +1301,7 @@ class HybridInverter:
                 sub_path = f"{path}.{key}" if path else str(key)
                 if sub_path in _IGNORED_PATHS:
                     continue
-                # Per-branch isolation: one malformed sub-tree never poisons
-                # sibling branches.
-                try:
-                    self._walk(sub_value, sub_path)
-                except Exception:  # noqa: BLE001
-                    _LOGGER.warning(
-                        "Eleven Energy Plus failed walking %s for device %s",
-                        sub_path,
-                        self.device_id,
-                        exc_info=True,
-                    )
+                self._walk(sub_value, sub_path, depth + 1)
             return
 
         if isinstance(value, list):
@@ -1072,16 +1310,7 @@ class HybridInverter:
                 if idx >= _MAX_LIST_EXPANSION:
                     truncated = True
                     break
-                sub_path = f"{path}.{idx}"
-                try:
-                    self._walk(item, sub_path)
-                except Exception:  # noqa: BLE001
-                    _LOGGER.warning(
-                        "Eleven Energy Plus failed walking %s for device %s",
-                        sub_path,
-                        self.device_id,
-                        exc_info=True,
-                    )
+                self._walk(item, f"{path}.{idx}", depth + 1)
             if truncated and path not in self._truncated_list_paths:
                 _LOGGER.warning(
                     "Eleven Energy Plus truncated list %s at %d entries for device %s",
@@ -1095,7 +1324,7 @@ class HybridInverter:
         # Leaf value: shield siblings from a single bad field.
         try:
             self._handle_leaf(path, value)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOGGER.warning(
                 "Eleven Energy Plus failed handling leaf %s for device %s",
                 path,
@@ -1103,14 +1332,43 @@ class HybridInverter:
                 exc_info=True,
             )
 
+    def _ignore_list_item(self, list_path: str, item: IgnoredItem) -> None:
+        """Record an unusable indexed-list item, warning once per problem."""
+        key = f"{list_path}:{item.key}"
+        if key in self.ignored_list_items:
+            return
+        self.ignored_list_items[key] = item.reason
+        _LOGGER.warning(
+            "Eleven Energy Plus ignoring a %s item for device %s: %s",
+            list_path,
+            self.device_id,
+            item.reason,
+        )
+
     def _process_indexed_lists(self, payload: dict[str, Any]) -> None:
         """Route MPPT and battery list items to their curated entities.
 
         Batteries that appear after discovery get their entity set created on
-        the fly; MPPT items beyond the model's tracker count are ignored.
+        the fly. An MPPT index outside the model's trackers, and any item
+        :func:`scan_indexed_items` cannot use, is ignored and reported once.
         """
         for list_path in _INDEXED_LISTS:
-            for _position, index, item in indexed_items(payload, list_path):
+            usable, ignored = scan_indexed_items(payload, list_path)
+            for problem in ignored:
+                self._ignore_list_item(list_path, problem)
+            for _position, index, item in usable:
+                if list_path == "pv.mppts" and not 1 <= index <= self.mppt_count:
+                    self._ignore_list_item(
+                        list_path,
+                        IgnoredItem(
+                            f"out_of_range:{index}",
+                            f"MPPT index {index} is not one of this model's "
+                            f"{self.mppt_count} trackers"
+                            if self.model_known
+                            else f"MPPT index {index} cannot be placed: the model is unknown",
+                        ),
+                    )
+                    continue
                 if list_path == "battery.batteries" and not any(
                     path.startswith(f"{list_path}.{index}.")
                     for path in self.sensor_entities
@@ -1123,20 +1381,12 @@ class HybridInverter:
                     )
                     self.controller.add_entities("sensor", created)
                 for field, value in item.items():
-                    entity = self.sensor_entities.get(f"{list_path}.{index}.{field}")
-                    if entity is None:
+                    path = f"{list_path}.{index}.{field}"
+                    entity = self.sensor_entities.get(path)
+                    if entity is None or value is None:
                         continue
-                    try:
-                        entity.set_native_value(value)
-                    except Exception:  # noqa: BLE001
-                        _LOGGER.warning(
-                            "Eleven Energy Plus failed handling %s.%s.%s for device %s",
-                            list_path,
-                            index,
-                            field,
-                            self.device_id,
-                            exc_info=True,
-                        )
+                    self._seen_paths.add(path)
+                    entity.set_native_value(value)
 
     def _process_model(self, model: Any) -> None:
         """Update the nameplate rating entities from a ``model`` block."""
@@ -1165,10 +1415,12 @@ class HybridInverter:
     def _handle_leaf(self, path: str, value: Any) -> None:
         if value is None:
             return
+        self._seen_paths.add(path)
 
         if path in self.sensor_entities:
-            entity = self.sensor_entities[path]
-            entity.set_native_value(self._coerce_string_value(path, value))
+            self.sensor_entities[path].set_native_value(
+                self._coerce_string_value(path, value)
+            )
             return
 
         if path in self.binary_sensor_entities:
@@ -1206,11 +1458,12 @@ class HybridInverter:
             entity.set_binary_value(value)
             self.controller.add_entities("binary_sensor", [entity])
         else:
-            entity.set_native_value(self._coerce_string_value(path, value))
+            # Only predefined paths are lowercased, so a new field is not.
+            entity.set_native_value(value)
             self.controller.add_entities("sensor", [entity])
 
 
-class _InverterEntityMixin:
+class _InverterEntityMixin(Entity):
     """Behaviour shared by the inverter's sensor and binary sensor entities.
 
     Entities are "push-driven": values arrive synchronously from
@@ -1222,11 +1475,6 @@ class _InverterEntityMixin:
 
     _attr_has_entity_name = True
     _attr_should_poll = False
-
-    entity_type: str
-    auto_discovered: bool
-    _availability: Callable[[], bool] | None
-    _invalid_value_warned: bool
 
     def _init_common(
         self,
@@ -1267,7 +1515,7 @@ class _InverterEntityMixin:
 
     @property
     def available(self) -> bool:
-        """Follow the owning inverter's availability."""
+        """Follow the owning inverter's availability rule for this entity."""
         if self._availability is None:
             return True
         return self._availability()
@@ -1276,16 +1524,21 @@ class _InverterEntityMixin:
         """Write the current state if the entity has been added to HA.
 
         Entities can be constructed (and receive values) before
-        ``async_add_entities`` runs; until then there is nothing to write and
-        Home Assistant flushes the stored value on add.
+        ``async_add_entities`` runs; until then ``hass`` is unset, there is
+        nothing to write, and Home Assistant writes the value when it adds
+        the entity. Writes after removal are ignored by Home Assistant.
         """
-        if getattr(self, "hass", None) is None or self.entity_id is None:
+        if getattr(self, "hass", None) is None:
             return
-        try:
-            self.async_write_ha_state()  # type: ignore[attr-defined]
-        except RuntimeError:
-            # Created but not yet (or no longer) registered with HA.
-            pass
+        self.async_write_ha_state()
+
+    @callback
+    def async_entity_id_changed(self, old_entity_id: str) -> None:
+        """Opt in to in-place ``entity_id`` changes (Home Assistant 2026.11+).
+
+        Nothing here is keyed on the ``entity_id``, so a rename needs no
+        work; defining the method is what opts in.
+        """
 
     def _warn_invalid_value(self, value: Any) -> None:
         if self._invalid_value_warned:
@@ -1299,14 +1552,16 @@ class _InverterEntityMixin:
         )
 
 
-class InverterSensorEntity(_InverterEntityMixin, SensorEntity):
+class InverterSensorEntity(_InverterEntityMixin, RestoreSensor):
     """Sensor entity bound to a single JSON leaf on the inverter.
 
     Used for every numeric and string field, curated and auto-discovered.
     A sensor with a unit, device class, state class or display precision is
     numeric: it only ever reports finite numbers, and anything else (a
     string, NaN, a boolean) reads as unknown instead of raising inside Home
-    Assistant on every poll.
+    Assistant on every poll. A ``total_increasing`` sensor additionally
+    passes every reading through a :class:`TotalIncreasingGuard`, seeded
+    from the value it had before a restart.
     """
 
     def __init__(
@@ -1360,6 +1615,49 @@ class InverterSensorEntity(_InverterEntityMixin, SensorEntity):
             or state_class is not None
             or decimals >= 0
         )
+        self._counter = (
+            TotalIncreasingGuard()
+            if state_class == SensorStateClass.TOTAL_INCREASING
+            else None
+        )
+        self._counter_warnings: set[str] = set()
+
+    async def async_added_to_hass(self) -> None:
+        """Seed a counter's guard with the value it had before the restart.
+
+        The first reading after a restart has already been applied by the
+        time the entity is added, so it is judged again against the restored
+        value: a reading below it reads unknown until confirmed.
+        """
+        await super().async_added_to_hass()
+        counter = self._counter
+        if counter is None:
+            return
+        last = await self.async_get_last_sensor_data()
+        restored = finite_float(last.native_value) if last is not None else None
+        if restored is None:
+            return
+        counter.restore(restored)
+        current = self._attr_native_value
+        if isinstance(current, (int, float)):
+            self._attr_native_value = self._judge_counter(counter, float(current))
+
+    def _judge_counter(self, counter: TotalIncreasingGuard, value: float) -> float | None:
+        """Pass a counter reading through ``counter``, warning once per problem."""
+        reference = counter.reference
+        published, problem = counter.judge(value)
+        if problem is not None and problem not in self._counter_warnings:
+            self._counter_warnings.add(problem)
+            _LOGGER.warning(
+                "Eleven Energy Plus withheld a %s reading of %s for %s (last "
+                "reported %s); it reads unknown so the Energy dashboard does "
+                "not record a false meter reset",
+                problem,
+                value,
+                self.entity_id,
+                reference,
+            )
+        return published
 
     def set_native_value(self, new_state: Any) -> None:
         """Validate a new value from the API and push it to Home Assistant.
@@ -1367,6 +1665,7 @@ class InverterSensorEntity(_InverterEntityMixin, SensorEntity):
         Unchanged values skip the state write (saves a Recorder write on
         every poll for fields that rarely move). Values that cannot be shown
         by this sensor become ``None`` (unknown) and are warned about once.
+        ``None`` itself means "no value in this reading".
         """
         value: Any
         if self._numeric:
@@ -1377,6 +1676,8 @@ class InverterSensorEntity(_InverterEntityMixin, SensorEntity):
             value = new_state
         if value is None and new_state is not None:
             self._warn_invalid_value(new_state)
+        if value is not None and self._counter is not None:
+            value = self._judge_counter(self._counter, float(value))
 
         if self._attr_native_value == value:
             return
@@ -1438,3 +1739,6 @@ class InverterBinarySensorEntity(_InverterEntityMixin, BinarySensorEntity):
 
         self._attr_is_on = value
         self.write_state()
+
+
+type InverterEntity = InverterSensorEntity | InverterBinarySensorEntity

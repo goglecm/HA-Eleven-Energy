@@ -5,8 +5,12 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.core import HomeAssistant, State
+from homeassistant.helpers import entity_registry as er, restore_state
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    mock_restore_cache_with_extra_data,
+)
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
 )
@@ -134,6 +138,46 @@ async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> bool:
     result = await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return result
+
+
+def restore_sensor_value(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    entity_id: str,
+    native_value: Any,
+    unit: str,
+) -> None:
+    """Make ``entity_id`` restore ``native_value`` when it is added.
+
+    ``entry`` must already be added to ``hass``. The registry entry is
+    created first, because from Home Assistant 2026.11 a restored state is
+    looked up by entity-registry id once the entity has one; the 2026.10
+    test package's ``mock_restore_cache_with_extra_data`` only fills the
+    older by-entity-id cache, so the state is moved across there.
+    """
+    registry_entry = er.async_get(hass).async_get_or_create(
+        "sensor",
+        DOMAIN,
+        entity_id.split(".", 1)[1],
+        config_entry=entry,
+        suggested_object_id=entity_id.split(".", 1)[1],
+    )
+    assert registry_entry.entity_id == entity_id
+    mock_restore_cache_with_extra_data(
+        hass,
+        [
+            (
+                State(entity_id, str(native_value)),
+                {"native_value": native_value, "native_unit_of_measurement": unit},
+            )
+        ],
+    )
+    data = restore_state.async_get(hass)
+    by_registry_id = getattr(data, "last_states_by_entity_registry_id", None)
+    if by_registry_id is not None:  # Home Assistant 2026.11+
+        stored = vars(data).pop("last_states")[entity_id]
+        stored.entity_registry_id = registry_entry.id
+        by_registry_id[registry_entry.id] = stored
 
 
 def device_field(info: Any, key: str) -> Any:

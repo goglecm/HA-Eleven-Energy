@@ -31,6 +31,11 @@ from custom_components.eleven_energy_plus.const import (
     OAUTH_TOKEN_URL,
 )
 
+from .common import site_summary
+
+# A site listing with one hybrid inverter: what every working credential sees.
+SITE = {"devices": [site_summary()]}
+
 TOKEN_RESPONSE = {
     "access_token": "access-1",
     "refresh_token": "refresh-1",
@@ -102,6 +107,7 @@ async def _complete_sign_in(
     state = config_entry_oauth2_flow._decode_jwt(hass, query["state"])
     assert state is not None
     aioclient_mock.post(OAUTH_TOKEN_URL, json=TOKEN_RESPONSE)
+    aioclient_mock.get(f"{BASE_URL}site", json=SITE)
 
     # What Home Assistant's /auth/external/callback view does with the redirect.
     result = await hass.config_entries.flow.async_configure(
@@ -110,8 +116,7 @@ async def _complete_sign_in(
     assert result["type"] is FlowResultType.EXTERNAL_STEP_DONE
     result = await hass.config_entries.flow.async_configure(result["flow_id"])
 
-    token_call = aioclient_mock.mock_calls[-1]
-    assert str(token_call[1]) == OAUTH_TOKEN_URL
+    token_call = next(call for call in aioclient_mock.mock_calls if str(call[1]) == OAUTH_TOKEN_URL)
     form = token_call[2]
     assert form["grant_type"] == "authorization_code"
     assert form["client_id"] == OAUTH_CLIENT_ID
@@ -123,19 +128,21 @@ async def _complete_sign_in(
 class TestUserFlow:
     """Initial setup: a menu offering sign-in or an API token."""
 
+    @pytest.mark.covers("FC-FLOW-01")
     async def test_menu_shown_initially(self, hass: HomeAssistant) -> None:
         result = await _start_user_flow(hass)
         assert result["type"] is FlowResultType.MENU
         assert result["step_id"] == "user"
         assert result["menu_options"] == ["pick_implementation", "token"]
 
+    @pytest.mark.covers("FC-FLOW-02")
+    @pytest.mark.usefixtures("mock_setup_entry")
     async def test_token_happy_path_creates_entry(
         self,
         hass: HomeAssistant,
         aioclient_mock: AiohttpClientMocker,
-        mock_setup_entry: AsyncMock,
     ) -> None:
-        aioclient_mock.get(f"{BASE_URL}site", status=200, json={"devices": []})
+        aioclient_mock.get(f"{BASE_URL}site", status=200, json=SITE)
         result = await _start_user_flow(hass)
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {"next_step_id": "token"}
@@ -161,6 +168,7 @@ class TestUserFlow:
             (503, "cannot_connect"),
         ],
     )
+    @pytest.mark.covers("FC-FLOW-02")
     async def test_token_error_paths(
         self,
         hass: HomeAssistant,
@@ -193,13 +201,43 @@ class TestUserFlow:
         )
         assert result["errors"] == {"base": "cannot_connect"}
 
+    @pytest.mark.covers("FC-FLOW-02")
+    @pytest.mark.parametrize(
+        "response",
+        [{"text": "not json"}, {"json": ["devices"]}, {"json": {"devices": "none"}}, {"json": {}}],
+        ids=["not_json", "list", "devices_not_list", "no_devices_key"],
+    )
+    async def test_token_unusable_site_payload(
+        self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, response: dict[str, Any]
+    ) -> None:
+        aioclient_mock.get(f"{BASE_URL}site", **response)
+        result = await _start_user_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "token"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"token": "any"}
+        )
+        assert result["errors"] == {"base": "cannot_connect"}
+
+    @pytest.mark.covers("FC-FLOW-03")
+    @pytest.mark.usefixtures("current_request_with_host", "mock_setup_entry")
+    async def test_sign_in_is_checked_with_the_new_access_token(
+        self,
+        hass: HomeAssistant,
+        aioclient_mock: AiohttpClientMocker,
+    ) -> None:
+        await _complete_sign_in(hass, aioclient_mock, await _start_user_flow(hass))
+        probe = next(call for call in aioclient_mock.mock_calls if str(call[1]) == f"{BASE_URL}site")
+        assert probe[3]["Authorization"] == "Bearer access-1"
+
     async def test_token_unexpected_error(self, hass: HomeAssistant) -> None:
         result = await _start_user_flow(hass)
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {"next_step_id": "token"}
         )
         with patch(
-            "custom_components.eleven_energy_plus.config_flow._check_token",
+            "custom_components.eleven_energy_plus.config_flow._site_inverters",
             side_effect=ValueError("bug"),
         ):
             result = await hass.config_entries.flow.async_configure(
@@ -220,12 +258,12 @@ class TestUserFlow:
         assert result["errors"] == {"base": "invalid_auth"}
         assert aioclient_mock.call_count == 0
 
+    @pytest.mark.covers("FC-FLOW-03")
+    @pytest.mark.usefixtures("current_request_with_host", "mock_setup_entry")
     async def test_sign_in_creates_entry(
         self,
         hass: HomeAssistant,
         aioclient_mock: AiohttpClientMocker,
-        current_request_with_host: None,
-        mock_setup_entry: AsyncMock,
     ) -> None:
         result = await _complete_sign_in(hass, aioclient_mock, await _start_user_flow(hass))
         assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -235,8 +273,9 @@ class TestUserFlow:
         assert result["data"]["token"]["refresh_token"] == "refresh-1"
         assert result["options"] == {CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL_SECONDS}
 
+    @pytest.mark.usefixtures("current_request_with_host")
     async def test_each_authorization_gets_a_fresh_verifier(
-        self, hass: HomeAssistant, current_request_with_host: None
+        self, hass: HomeAssistant
     ) -> None:
         challenges = set()
         for _ in range(2):
@@ -248,6 +287,7 @@ class TestUserFlow:
             hass.config_entries.flow.async_abort(result["flow_id"])
         assert len(challenges) == 2
 
+    @pytest.mark.covers("FC-FLOW-04")
     async def test_only_one_entry_allowed(self, hass: HomeAssistant) -> None:
         _token_entry().add_to_hass(hass)
         result = await _start_user_flow(hass)
@@ -258,6 +298,7 @@ class TestUserFlow:
 class TestReconfigure:
     """Reconfigure moves an entry between credential kinds, keeping its identity."""
 
+    @pytest.mark.covers("FC-FLOW-05", "FC-FLOW-10")
     async def test_switch_to_api_token(
         self,
         hass: HomeAssistant,
@@ -266,7 +307,7 @@ class TestReconfigure:
     ) -> None:
         entry = _oauth_entry()
         entry.add_to_hass(hass)
-        aioclient_mock.get(f"{BASE_URL}site", json={"devices": []})
+        aioclient_mock.get(f"{BASE_URL}site", json=SITE)
 
         result = await entry.start_reconfigure_flow(hass)
         assert result["type"] is FlowResultType.MENU
@@ -285,11 +326,12 @@ class TestReconfigure:
         mock_reload.assert_called_once_with(entry.entry_id)
         assert len(hass.config_entries.async_entries(DOMAIN)) == 1
 
+    @pytest.mark.covers("FC-FLOW-06", "FC-FLOW-10")
+    @pytest.mark.usefixtures("current_request_with_host")
     async def test_switch_to_sign_in(
         self,
         hass: HomeAssistant,
         aioclient_mock: AiohttpClientMocker,
-        current_request_with_host: None,
         mock_reload: Any,
     ) -> None:
         entry = _token_entry()
@@ -302,6 +344,7 @@ class TestReconfigure:
         assert entry.data["token"]["access_token"] == "access-1"
         mock_reload.assert_called_once_with(entry.entry_id)
 
+    @pytest.mark.covers("FC-FLOW-05")
     async def test_invalid_token_keeps_existing_credential(
         self,
         hass: HomeAssistant,
@@ -326,6 +369,7 @@ class TestReconfigure:
 class TestReauth:
     """Reauthentication asks for the same kind of credential the entry holds."""
 
+    @pytest.mark.covers("FC-FLOW-07", "FC-FLOW-10")
     async def test_api_token_reauth(
         self,
         hass: HomeAssistant,
@@ -345,7 +389,7 @@ class TestReauth:
         assert result["errors"] == {"base": "invalid_auth"}
 
         aioclient_mock.clear_requests()
-        aioclient_mock.get(f"{BASE_URL}site", json={"devices": []})
+        aioclient_mock.get(f"{BASE_URL}site", json=SITE)
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {"token": "fresh-token"}
         )
@@ -354,11 +398,12 @@ class TestReauth:
         assert entry.data == {"token": "fresh-token"}
         mock_reload.assert_called_once_with(entry.entry_id)
 
+    @pytest.mark.covers("FC-FLOW-08", "FC-FLOW-10")
+    @pytest.mark.usefixtures("current_request_with_host")
     async def test_sign_in_reauth(
         self,
         hass: HomeAssistant,
         aioclient_mock: AiohttpClientMocker,
-        current_request_with_host: None,
         mock_reload: Any,
     ) -> None:
         entry = _oauth_entry()
@@ -373,6 +418,7 @@ class TestReauth:
             hass, URL(result["url"]).query["state"]
         )
         aioclient_mock.post(OAUTH_TOKEN_URL, json={**TOKEN_RESPONSE, "access_token": "access-2"})
+        aioclient_mock.get(f"{BASE_URL}site", json=SITE)
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {"state": state, "code": "code-2"}
         )
@@ -387,6 +433,7 @@ class TestReauth:
 class TestOptionsFlow:
     """Options cover the poll interval and the device-label override only."""
 
+    @pytest.mark.covers("FC-OPT-01")
     async def test_options_flow_shows_current_values(self, hass: HomeAssistant) -> None:
         entry = _token_entry()
         entry.add_to_hass(hass)
@@ -398,6 +445,7 @@ class TestOptionsFlow:
             "the credential must not be editable (or shown) in Options"
         )
 
+    @pytest.mark.covers("FC-OPT-02")
     async def test_options_flow_persists_changes(self, hass: HomeAssistant) -> None:
         entry = _token_entry()
         entry.add_to_hass(hass)
@@ -409,6 +457,7 @@ class TestOptionsFlow:
         assert result["data"] == {CONF_POLL_INTERVAL: 60, CONF_DEVICE_LABEL: ""}
         assert entry.data == {"token": "old-token"}
 
+    @pytest.mark.covers("FC-OPT-03")
     async def test_options_flow_persists_device_label_override(
         self, hass: HomeAssistant
     ) -> None:
@@ -438,6 +487,7 @@ class TestOptionsFlow:
         assert schema_defaults[CONF_DEVICE_LABEL] == "Custom Label"
         assert schema_defaults[CONF_POLL_INTERVAL] == 30
 
+    @pytest.mark.covers("FC-OPT-01")
     async def test_options_flow_on_sign_in_entry_keeps_credential(
         self, hass: HomeAssistant
     ) -> None:

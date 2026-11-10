@@ -13,7 +13,10 @@ This is the integration's lifecycle entry point. It is responsible for:
   entries, and forwarding setup to the sensor / binary sensor / number
   platforms.
 * Unwinding all of the above cleanly on unload, stopping the background
-  poller before tearing down the entities it might write to.
+  poller before tearing down the entities it might write to, and deleting
+  the entry's stored state, repair issues and notifications when the entry
+  is removed.
+* Letting the user delete the device of an inverter that has left the site.
 * Reacting to option updates: a device-label override change reloads the
   entry, anything else (the poll interval) is applied live. Credential
   changes are reloaded by the reauthentication / reconfigure flows
@@ -36,14 +39,19 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-from homeassistant.helpers import config_entry_oauth2_flow, config_validation as cv
+from homeassistant.helpers import (
+    config_entry_oauth2_flow,
+    config_validation as cv,
+    device_registry as dr,
+)
 from homeassistant.helpers.typing import ConfigType
 
 from .const import CONF_AUTH_IMPLEMENTATION, CONF_TOKEN, DOMAIN, PLATFORMS
 from .controller import Controller
 from .migration import async_migrate_entity_registry
+from .notifications import FaultReporter
 from .oauth import async_register_implementation
-from .services import SERVICE_NAMES, async_setup_services
+from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,7 +62,7 @@ type ElevenEnergyConfigEntry = ConfigEntry[Controller]
 # does not emit a deprecation warning at startup.
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-__all__ = ["SERVICE_NAMES", "ElevenEnergyConfigEntry"]
+__all__ = ["ElevenEnergyConfigEntry"]
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -135,10 +143,11 @@ async def async_unload_entry(
 ) -> bool:
     """Unload a config entry.
 
-    The background poller is stopped *before* the platforms are unloaded, so
-    an in-flight poll cannot write state on entities that are being removed.
-    The actions stay registered; with no loaded entry they report that the
-    integration is not loaded.
+    The controller is stopped *before* the platforms are unloaded, so an
+    in-flight poll cannot write state on entities that are being removed;
+    stopping it also makes every entity unavailable, so even an unload that
+    fails leaves no stale value on show. The actions stay registered; with
+    no loaded entry they report that the integration is not loaded.
     """
     controller: Controller | None = getattr(entry, "runtime_data", None)
     if controller is not None:
@@ -147,12 +156,46 @@ async def async_unload_entry(
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
+async def async_remove_entry(hass: HomeAssistant, entry: ElevenEnergyConfigEntry) -> None:
+    """Delete the stored optimiser timers and any repair issues left behind."""
+    await FaultReporter.async_remove(hass, entry)
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: ElevenEnergyConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """Allow deleting an inverter's device once it has left the site.
+
+    A device the site still lists would only be recreated by the next poll,
+    so deleting it is refused; one that has left the listing (or that the
+    integration no longer knows) can go, taking its entities with it. While
+    the entry is not loaded there is no listing to check, so any may go; one
+    the site still lists is recreated when the entry next loads.
+    """
+    controller: Controller | None = getattr(entry, "runtime_data", None)
+    if controller is None:
+        return True
+    device_ids = [
+        identifier
+        for domain, identifier in device_entry.identifiers
+        if domain == DOMAIN
+    ]
+    for device_id in device_ids:
+        inverter = controller.devices.get(device_id)
+        if inverter is not None and not inverter.missing:
+            return False
+    for device_id in device_ids:
+        controller.forget_device(device_id)
+    return True
+
+
 async def _async_update_listener(
     hass: HomeAssistant, entry: ElevenEnergyConfigEntry
 ) -> None:
-    """React to entry updates (see :meth:`Controller.async_entry_updated`)."""
-    controller: Controller | None = getattr(entry, "runtime_data", None)
-    if controller is None:
-        return
-    if controller.async_entry_updated():
+    """React to entry updates (see :meth:`Controller.async_entry_updated`).
+
+    The listener is only registered once ``runtime_data`` holds the
+    controller, and it is removed on unload.
+    """
+    if entry.runtime_data.async_entry_updated():
         hass.config_entries.async_schedule_reload(entry.entry_id)

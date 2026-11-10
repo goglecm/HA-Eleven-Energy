@@ -11,20 +11,18 @@ actions, controller and entity platforms.
 
 from __future__ import annotations
 
+from datetime import timedelta
+from enum import StrEnum
 from typing import Final
 
 from homeassistant.const import Platform
 
-try:
-    # Home Assistant 2026.7 deprecated the bare ``PERCENTAGE`` constant as a
-    # unit of measurement in favour of the ``UnitOfRatio`` enum. The enum does
-    # not exist on the 2026.3 floor this integration still supports, so fall
-    # back to the plain constant there. Both carry the value ``"%"``.
-    from homeassistant.const import UnitOfRatio
-
-    PERCENT: Final[str] = UnitOfRatio.PERCENTAGE
-except ImportError:  # pragma: no cover - exercised on HA < 2026.7 only
-    from homeassistant.const import PERCENTAGE as PERCENT  # type: ignore[assignment]
+# The percent unit. Home Assistant 2026.7 deprecated the name of the bare
+# ``PERCENTAGE`` constant in favour of ``UnitOfRatio.PERCENTAGE``, which does
+# not exist on the 2026.3 floor. Both are the string ``"%"`` (the enum is a
+# StrEnum), and units are compared by value, so the string itself is the same
+# unit on every supported version without importing either name.
+PERCENT: Final = "%"
 
 # Home Assistant integration domain. Must match the directory name under
 # ``custom_components/`` and the ``domain`` field in ``manifest.json``.
@@ -95,12 +93,16 @@ POLL_INTERVAL_STEP_SECONDS: Final = 5
 # the device ``name`` field).
 CONF_DEVICE_LABEL: Final = "device_label_override"
 
+# Longest accepted device-label override. Longer text, or text containing
+# control characters (newlines included), is refused by the options form.
+MAX_DEVICE_LABEL_LENGTH: Final = 64
+
 # Work-mode input limits. Service calls and device actions outside these
 # ranges are rejected with a validation error before anything is sent to an
-# inverter. ``MAX_POWER_KW`` matches the ceiling the Eleven Energy API itself
-# accepts; the UI selectors stop at ``UI_MAX_POWER_KW``, which covers every
-# current single-phase model, while YAML can go up to the API ceiling for
-# larger machines.
+# inverter. ``MAX_POWER_KW`` is the ceiling the integration accepts for any
+# machine. The device-action form's power selector stops at
+# ``UI_MAX_POWER_KW`` so the field stays usable; YAML and scripts can go up
+# to ``MAX_POWER_KW``.
 MIN_POWER_KW: Final = 0.0
 MAX_POWER_KW: Final = 50.0
 UI_MAX_POWER_KW: Final = 20.0
@@ -112,7 +114,55 @@ MAX_TARGET_MINUTES: Final = 1440
 # At the default 15 s cadence this is roughly 45 s of outage.
 UNAVAILABLE_AFTER_FAILED_POLLS: Final = 3
 
+# An inverter that is missing from this many consecutive successful site
+# listings is treated as removed from the site: its entities go unavailable
+# and a repair issue explains that the device can be deleted. One listing is
+# not enough, so a single truncated response cannot hide a machine.
+MISSING_AFTER_SITE_POLLS: Final = 2
+
+# While the API rejects the credential, an API-token entry re-tests it this
+# often (seconds), so a rejection caused by a transient fault on Eleven
+# Energy's side recovers on its own. A refused account sign-in refresh is
+# definitive and is not re-tested.
+AUTH_RECOVERY_SECONDS: Final = 600
+
+# ``Retry-After`` hints (seconds or an HTTP date) are clamped to this range,
+# so a hostile or broken header can neither stall polling for days nor turn
+# into a busy loop.
+MAX_RETRY_AFTER_SECONDS: Final = 300.0
+
+# How long polling backs off after HTTP 429 without a usable ``Retry-After``.
+RATE_LIMIT_BACKOFF_SECONDS: Final = 60.0
+
+# Thresholds after which a lasting fault becomes a repair issue (and, the
+# first time, a persistent notification). Durations are measured with the
+# monotonic clock, so wall-clock changes cannot trigger or suppress them.
+CLOUD_UNREACHABLE_AFTER_SECONDS: Final = 15 * 60
+INVERTER_OFFLINE_AFTER_SECONDS: Final = 15 * 60
+
+# Setting any work mode switches Eleven Energy's optimiser off until Reset
+# Work Mode is sent. After this long without a reset, a repair issue says so.
+# Measured in UTC wall-clock time and persisted, because it must survive a
+# restart; a clock that moves backwards restarts the measurement.
+OPTIMISER_OFF_AFTER: Final = timedelta(hours=24)
+
 # Hard cap on auto-discovered (non-curated) entities per inverter. A payload
 # that suddenly grows a dict keyed by timestamps would otherwise create new
 # entities on every poll until the entity registry is unusable.
 MAX_DYNAMIC_ENTITIES_PER_DEVICE: Final = 200
+
+
+class ErrorKind(StrEnum):
+    """Why a work-mode action failed; reported as ``error_kind``.
+
+    Each kind maps to exactly one exception class and translation key in
+    :mod:`.services` for callers that did not ask for a response.
+    """
+
+    INVALID_REQUEST = "invalid_request"
+    CREDENTIAL_REJECTED = "credential_rejected"
+    API_ERROR = "api_error"
+    SUPERSEDED = "superseded"
+    ABORTED = "aborted"
+    INTERNAL_ERROR = "internal_error"
+    NOT_LOADED = "not_loaded"

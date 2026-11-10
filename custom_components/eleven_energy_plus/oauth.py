@@ -15,6 +15,8 @@ the flow.
 
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_entry_oauth2_flow
 
@@ -60,7 +62,7 @@ class ElevenEnergyOAuth2Implementation(
         return config_entry_oauth2_flow.MY_AUTH_CALLBACK_PATH
 
     @property
-    def extra_authorize_data(self) -> dict:
+    def extra_authorize_data(self) -> dict[str, Any]:
         """Add the scopes, and take a fresh PKCE verifier for each authorization.
 
         The base class generates one verifier when the implementation is

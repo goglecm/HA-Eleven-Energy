@@ -63,6 +63,7 @@ def _mock(aioclient_mock: AiohttpClientMocker, device_id: str = "abc") -> None:
 class TestDiagnostics:
     """Snapshot-style coverage of the diagnostics dump."""
 
+    @pytest.mark.covers("FC-DIAG-01")
     async def test_dump_has_expected_top_level_shape(
         self,
         hass: HomeAssistant,
@@ -81,6 +82,7 @@ class TestDiagnostics:
         assert dump["integration"]["version"] == manifest_version
         assert dump["entry"]["credential"] == "API token"
 
+    @pytest.mark.covers("FC-DIAG-01")
     async def test_no_file_io_in_the_event_loop(
         self,
         hass: HomeAssistant,
@@ -101,6 +103,7 @@ class TestDiagnostics:
             dump = await async_get_config_entry_diagnostics(hass, entry)
         assert dump["integration"]["version"] not in ("", "unknown")
 
+    @pytest.mark.covers("FC-DIAG-02")
     async def test_token_is_redacted(
         self,
         hass: HomeAssistant,
@@ -113,6 +116,7 @@ class TestDiagnostics:
         assert dump["entry"]["data"]["token"] != "super-secret-token"
         assert "super-secret-token" not in repr(dump)
 
+    @pytest.mark.covers("FC-DIAG-02")
     async def test_sign_in_tokens_are_redacted(self, hass: HomeAssistant) -> None:
         entry = MockConfigEntry(
             domain=DOMAIN,
@@ -128,6 +132,7 @@ class TestDiagnostics:
         assert "ref-secret" not in rendered
         assert dump["entry"]["credential"] == "account sign-in"
 
+    @pytest.mark.covers("FC-DIAG-02")
     async def test_serial_and_device_ids_redacted_in_payloads(
         self,
         hass: HomeAssistant,
@@ -153,6 +158,7 @@ class TestDiagnostics:
         assert site["devices"][0]["name"] == "North Sea 6 (6kW)"
         assert site["devices"][0]["model"]["name"] == "Mediterranean Sea 12"
 
+    @pytest.mark.covers("FC-DIAG-03")
     async def test_controller_block_reflects_state(
         self,
         hass: HomeAssistant,
@@ -176,14 +182,17 @@ class TestDiagnostics:
         assert device["available"] is True
         assert device["entity_count"] > 10
 
+    @pytest.mark.defect("D34")
+    @pytest.mark.covers("FC-DIAG-04")
     async def test_dump_without_loaded_controller(
         self, hass: HomeAssistant, entry: MockConfigEntry
     ) -> None:
+        """The payload list has the same type loaded or not (it was a dict here)."""
         assert await async_setup_component(hass, DOMAIN, {})
         entry.add_to_hass(hass)
         dump = await async_get_config_entry_diagnostics(hass, entry)
         assert dump["controller"] == {"loaded": False}
-        assert dump["raw_payloads"] == {"site": None, "devices": {}}
+        assert dump["raw_payloads"] == {"site": None, "devices": []}
         assert dump["entry"]["data"]["token"] != "super-secret-token"
 
 
@@ -203,7 +212,57 @@ class TestRedactionSet:
             "serial_number",
             "deviceId",
             "device_id",
+            "address",
+            "postcode",
+            "postCode",
+            "latitude",
+            "longitude",
+            "email",
+            "phone",
         ],
     )
     def test_to_redact_covers_critical_keys(self, key: str) -> None:
         assert key in TO_REDACT
+
+
+class TestFaultState:
+    """Diagnostics say what is wrong right now."""
+
+    @pytest.mark.covers("FC-DIAG-03")
+    async def test_issues_and_inverter_state_are_reported(
+        self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+    ) -> None:
+        reading = device_payload(model=MODEL_SINGLE_PHASE, mppts=[{"index": 7, "power": 1.0}])
+        reading["online"] = False
+        mock_api(aioclient_mock, devices={"abc": reading})
+        entry = MockConfigEntry(domain=DOMAIN, data={"token": "t"}, options={CONF_POLL_INTERVAL: 30})
+        assert await setup_entry(hass, entry)
+        controller = entry.runtime_data
+        controller.faults.report_missing("abc", "Eleven Energy Plus X", True)
+        dump = await async_get_config_entry_diagnostics(hass, entry)
+        snapshot = dump["controller"]
+        assert snapshot["issues"] == ["inverter_missing_abc"]
+        (device,) = snapshot["known_devices"]
+        assert device["offline"] is True
+        assert device["missing"] is False
+        assert device["api_connected"] is True
+        assert device["last_successful_poll"] == controller.devices["abc"].last_success_at.isoformat()
+        controller.devices["abc"].last_success_at = None
+        dump = await async_get_config_entry_diagnostics(hass, entry)
+        assert dump["controller"]["known_devices"][0]["last_successful_poll"] is None
+        assert device["ignored_list_items"] == {
+            "pv.mppts:out_of_range:7": "MPPT index 7 is not one of this model's 2 trackers"
+        }
+
+    @pytest.mark.covers("FC-DIAG-01")
+    async def test_version_lookup_failure_is_logged(
+        self, hass: HomeAssistant, entry: MockConfigEntry, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        entry.add_to_hass(hass)
+        with patch(
+            "custom_components.eleven_energy_plus.diagnostics.async_get_integration",
+            side_effect=RuntimeError("loader broke"),
+        ):
+            dump = await async_get_config_entry_diagnostics(hass, entry)
+        assert dump["integration"]["version"] == "unknown"
+        assert "could not read its own version" in caplog.text

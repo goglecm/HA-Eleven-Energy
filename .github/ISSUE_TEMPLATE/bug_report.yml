@@ -1,0 +1,53 @@
+name: Bug report
+description: Something in Eleven Energy Plus is not working as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. A diagnostics download is by far the most useful
+        thing to attach: Settings > Devices & services > Eleven Energy Plus >
+        three-dot menu > Download diagnostics. Tokens, serial numbers, device
+        ids and location details are redacted automatically.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: input
+    id: integration-version
+    attributes:
+      label: Eleven Energy Plus version
+      placeholder: "2.0.0"
+    validations:
+      required: true
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      placeholder: "2026.11.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: credential
+    attributes:
+      label: How is the integration connected?
+      options:
+        - Signed in with an Eleven Energy account
+        - API token
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Drag the downloaded diagnostics JSON file here.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: Optional. Enable debug logging from the integration's page if asked.
+      render: text

@@ -1,0 +1,42 @@
+# Tool configuration only; the integration is not a Python package to build.
+
+[tool.coverage.run]
+branch = true
+source = ["custom_components/eleven_energy_plus"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+]
+
+[tool.mutmut]
+# Safety-critical code: validators and parsers, target resolution, retries
+# and ordering, availability, value handling and notification thresholds.
+source_paths = ["custom_components"]
+only_mutate = [
+    "custom_components/eleven_energy_plus/parsing.py",
+    "custom_components/eleven_energy_plus/services.py",
+    "custom_components/eleven_energy_plus/controller.py",
+    "custom_components/eleven_energy_plus/hybrid_inverter.py",
+    "custom_components/eleven_energy_plus/notifications.py",
+]
+mutate_only_covered_lines = true
+# Log calls are not mutated: their wording is not behaviour. That a fault is
+# logged at all is asserted where it matters (caplog checks, and the AST scan
+# in tests/test_static_analysis.py that fails on silent except blocks).
+do_not_mutate_patterns = ["_LOGGER\\.(debug|info|warning|error|exception|log)\\("]
+also_copy = ["pytest.ini", "vulture_whitelist.py", "hacs.json", "README.md", "LICENSE"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# The static-analysis tests lint and type-check the source tree, which under
+# mutmut is the mutated copy; they run in the normal suite instead.
+pytest_add_cli_args = [
+    "-p", "no:cacheprovider",
+    "-p", "no:randomly",
+    "-q",
+    "-o", "addopts=",
+    "--functional-coverage=off",
+    "--ignore=tests/test_static_analysis.py",
+]

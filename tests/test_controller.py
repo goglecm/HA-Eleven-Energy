@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import logging
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -38,6 +39,7 @@ from custom_components.eleven_energy_plus.controller import (
     Controller,
     ElevenEnergyApiError,
     ElevenEnergyAuthError,
+    ElevenEnergyRateLimitedError,
     PostResult,
 )
 from custom_components.eleven_energy_plus.hybrid_inverter import HybridInverter
@@ -78,9 +80,11 @@ def _fake_inverter(device_id: str = "abc") -> Any:
 
     class _Fake:
         type = "hybridinverter"
+        missing = False
 
         def __init__(self) -> None:
             self.device_id = device_id
+            self.display_name = f"Eleven Energy Plus {device_id}"
             self.unavailable_marked = False
 
         def mark_unavailable(self) -> None:
@@ -110,6 +114,7 @@ def _reauth_flows(hass: HomeAssistant) -> list[dict[str, Any]]:
 class TestSendReliablePost:
     """The retry loop must be bounded, selective and cancellable."""
 
+    @pytest.mark.covers("FC-CMD-01")
     async def test_success_returns_post_result(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -123,6 +128,7 @@ class TestSendReliablePost:
         assert result.attempts == 1
         assert result.error is None
 
+    @pytest.mark.covers("FC-CMD-01")
     async def test_retry_cap_on_5xx(
         self,
         controller: Controller,
@@ -139,6 +145,7 @@ class TestSendReliablePost:
         assert result.error == "API returned status 503"
 
     @pytest.mark.parametrize("status", [400, 404, 409, 422])
+    @pytest.mark.covers("FC-CMD-01")
     async def test_no_retry_on_client_errors(
         self,
         controller: Controller,
@@ -153,6 +160,7 @@ class TestSendReliablePost:
         assert instant_backoff == []
 
     @pytest.mark.parametrize("status", [408, 429, 500, 502])
+    @pytest.mark.covers("FC-CMD-01")
     async def test_retries_retryable_statuses(
         self,
         controller: Controller,
@@ -165,6 +173,7 @@ class TestSendReliablePost:
         assert result.attempts == 5
 
     @pytest.mark.parametrize("status", [401, 403])
+    @pytest.mark.covers("FC-AUTH-06")
     async def test_auth_failure_stops_and_starts_reauth(
         self,
         hass: HomeAssistant,
@@ -184,6 +193,7 @@ class TestSendReliablePost:
         assert fake.unavailable_marked
         assert len(_reauth_flows(hass)) == 1
 
+    @pytest.mark.covers("FC-CMD-01")
     async def test_network_error_is_retried_then_succeeds(
         self, controller: Controller, instant_backoff: list[float], monkeypatch
     ) -> None:
@@ -200,6 +210,7 @@ class TestSendReliablePost:
         assert result.status == 200
         assert result.attempts == 3
 
+    @pytest.mark.covers("FC-CMD-02")
     async def test_retry_after_is_honoured_and_capped(
         self, controller: Controller, instant_backoff: list[float], monkeypatch
     ) -> None:
@@ -213,6 +224,7 @@ class TestSendReliablePost:
         assert result.status == 200
         assert instant_backoff == [7.0, 30.0]
 
+    @pytest.mark.covers("FC-CMD-05")
     async def test_shutdown_aborts_retries(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker, monkeypatch
     ) -> None:
@@ -226,6 +238,7 @@ class TestSendReliablePost:
         assert result.attempts == 1
         assert "shutting down" in result.error
 
+    @pytest.mark.covers("FC-CMD-03")
     async def test_superseded_aborts_before_next_attempt(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker, instant_backoff
     ) -> None:
@@ -242,7 +255,9 @@ class TestSendReliablePost:
         )
         assert result.attempts == 1
         assert "superseded" in result.error
+        assert result.kind == "superseded"
 
+    @pytest.mark.covers("FC-CMD-05", "FC-POLL-03")
     async def test_wait_backoff_wakes_on_shutdown_only(
         self, controller: Controller
     ) -> None:
@@ -262,6 +277,7 @@ class TestSendReliablePost:
 class TestSetWorkMode:
     """The structured response surface must be stable for automations."""
 
+    @pytest.mark.covers("FC-SVC-07")
     async def test_unknown_service_returns_error(self, controller: Controller) -> None:
         result = await controller.set_work_mode("not_a_service", {})
         assert result["success"] is False
@@ -274,6 +290,7 @@ class TestSetWorkMode:
         assert result["success"] is False
         assert result["error"] == "no Eleven Energy Plus device available"
 
+    @pytest.mark.covers("FC-SVC-04")
     async def test_missing_required_field_returns_error(
         self, controller: Controller
     ) -> None:
@@ -298,7 +315,7 @@ class TestSetWorkMode:
             "set_work_mode_force_charge", {"target_power": bad, "target_percent": 80}
         )
         assert result["success"] is False
-        assert "invalid value for field(s): target_power" == result["error"]
+        assert result["error"] == "invalid value for field(s): target_power"
         assert aioclient_mock.call_count == 0
 
     async def test_inf_minutes_never_raises(
@@ -311,6 +328,7 @@ class TestSetWorkMode:
         assert result["success"] is False
         assert "target_minutes" in result["error"]
 
+    @pytest.mark.covers("FC-SVC-06", "FC-CMD-06")
     async def test_success_returns_full_response(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -328,20 +346,36 @@ class TestSetWorkMode:
             "params": {"target_power": 3.5, "target_percent": 80.0},
             "attempts": 1,
             "error": None,
+            "error_kind": None,
         }
         assert controller._poll_now.is_set()
         assert not controller._shutdown.is_set()
 
-    async def test_clamps_out_of_range_inputs_as_defence_in_depth(
-        self, controller: Controller, aioclient_mock: AiohttpClientMocker
+    @pytest.mark.covers("FC-SVC-01")
+    @pytest.mark.parametrize(
+        ("service", "data", "field"),
+        [
+            ("set_work_mode_self_consumption", {"percent_to_battery": 250}, "percent_to_battery"),
+            ("set_work_mode_force_charge", {"target_power": 999, "target_percent": 50}, "target_power"),
+            ("set_work_mode_target_soc", {"target_soc": 50, "target_minutes": 60.5}, "target_minutes"),
+        ],
+    )
+    async def test_refuses_out_of_range_inputs_rather_than_clamping(
+        self,
+        controller: Controller,
+        aioclient_mock: AiohttpClientMocker,
+        service: str,
+        data: dict[str, Any],
+        field: str,
     ) -> None:
+        """Direct callers bypass the schema; the controller refuses, never clamps."""
         controller.devices["abc"] = _fake_inverter()
         aioclient_mock.post(POST_URL, status=200)
-        result = await controller.set_work_mode(
-            "set_work_mode_self_consumption", {"percent_to_battery": 250}
-        )
-        assert result["success"] is True
-        assert result["params"]["percent_to_battery"] == 100.0
+        result = await controller.set_work_mode(service, data)
+        assert result["success"] is False
+        assert result["error_kind"] == "invalid_request"
+        assert field in result["error"]
+        assert aioclient_mock.call_count == 0
 
     async def test_grid_export_carries_extra_flags(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
@@ -397,6 +431,7 @@ class TestSetWorkMode:
 class TestWorkModeOrdering:
     """Commands to one inverter run in order, and the newest one wins."""
 
+    @pytest.mark.covers("FC-CMD-03")
     async def test_newer_command_supersedes_one_in_backoff(
         self, controller: Controller, monkeypatch
     ) -> None:
@@ -437,6 +472,7 @@ class TestWorkModeOrdering:
         # The older command was never retried after the newer one was issued.
         assert sent == ["forceCharge", "reset"]
 
+    @pytest.mark.covers("FC-CMD-03")
     async def test_queued_intermediate_command_is_skipped(
         self, controller: Controller, monkeypatch
     ) -> None:
@@ -471,6 +507,7 @@ class TestWorkModeOrdering:
         assert results[2]["success"] is True
         assert sent == ["forceCharge", "reset"]
 
+    @pytest.mark.covers("FC-CMD-04")
     async def test_different_inverters_do_not_block_each_other(
         self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller, monkeypatch
     ) -> None:
@@ -489,7 +526,11 @@ class TestWorkModeOrdering:
         slow = asyncio.create_task(
             controller.set_work_mode("set_work_mode_reset", {"device_id": dev_a.id})
         )
-        fast = await controller.set_work_mode("set_work_mode_reset", {"device_id": dev_b.id})
+        for _ in range(5):
+            await asyncio.sleep(0)  # the slow command now holds inverter a's lock
+        fast = await asyncio.wait_for(
+            controller.set_work_mode("set_work_mode_reset", {"device_id": dev_b.id}), 1
+        )
         assert fast["success"] is True
         release.set()
         assert (await slow)["success"] is True
@@ -498,6 +539,7 @@ class TestWorkModeOrdering:
 class TestTargetResolution:
     """Explicit targets must match exactly one inverter; no guessing."""
 
+    @pytest.mark.covers("FC-SVC-09")
     async def test_device_id_resolves(
         self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
     ) -> None:
@@ -508,6 +550,7 @@ class TestTargetResolution:
         assert controller._resolve_target_device({"device_id": dev_b.id}) == ("b", None)
         assert controller._resolve_target_device({"device_id": [dev_b.id]}) == ("b", None)
 
+    @pytest.mark.covers("FC-SVC-09")
     async def test_entity_id_resolves_to_its_device(
         self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
     ) -> None:
@@ -520,6 +563,7 @@ class TestTargetResolution:
         entity_id = er.async_get(hass).async_get_entity_id("sensor", DOMAIN, "b_pv_power")
         assert controller._resolve_target_device({"entity_id": entity_id}) == ("b", None)
 
+    @pytest.mark.covers("FC-SVC-09")
     async def test_area_resolves(
         self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
     ) -> None:
@@ -531,6 +575,7 @@ class TestTargetResolution:
         dr.async_get(hass).async_update_device(dev.id, area_id=area.id)
         assert controller._resolve_target_device({"area_id": area.id}) == ("a", None)
 
+    @pytest.mark.covers("FC-SVC-10")
     async def test_unmatched_target_is_refused(
         self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
     ) -> None:
@@ -545,6 +590,7 @@ class TestTargetResolution:
             assert device_id is None
             assert error == "the target does not match any Eleven Energy Plus inverter"
 
+    @pytest.mark.covers("FC-SVC-10")
     async def test_target_matching_two_inverters_is_refused(
         self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
     ) -> None:
@@ -558,6 +604,7 @@ class TestTargetResolution:
         assert device_id is None
         assert "more than one inverter" in error
 
+    @pytest.mark.covers("FC-SVC-10")
     async def test_untargeted_call_on_multi_inverter_site_is_refused(
         self, controller: Controller
     ) -> None:
@@ -568,11 +615,13 @@ class TestTargetResolution:
         assert device_id is None
         assert "choose one in the Inverter field" in error
 
+    @pytest.mark.covers("FC-SVC-09")
     async def test_untargeted_call_on_single_inverter_site(self, controller: Controller) -> None:
         controller.devices["a"] = _fake_inverter("a")
         assert controller._resolve_target_device({}) == ("a", None)
 
     @pytest.mark.parametrize("key", ["floor_id", "label_id"])
+    @pytest.mark.covers("FC-SVC-10")
     async def test_unsupported_target_kinds(self, controller: Controller, key: str) -> None:
         controller.devices["a"] = _fake_inverter("a")
         device_id, error = controller._resolve_target_device({key: ["x"]})
@@ -583,6 +632,7 @@ class TestTargetResolution:
 class TestPollSite:
     """Site polling drives device discovery."""
 
+    @pytest.mark.covers("FC-DISC-06")
     async def test_returns_false_on_5xx(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -594,12 +644,14 @@ class TestPollSite:
         "body",
         [["not", "a", "dict"], {"devices": "nope"}, {}, {"devices": None}],
     )
+    @pytest.mark.covers("FC-DISC-06")
     async def test_malformed_site_payload_is_not_a_crash(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker, body: Any
     ) -> None:
         aioclient_mock.get(f"{BASE_URL}site", json=body)
         assert await controller.poll_site() is False
 
+    @pytest.mark.covers("FC-DISC-06", "FC-DISC-01")
     async def test_malformed_device_entries_are_skipped(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -620,6 +672,7 @@ class TestPollSite:
         assert await controller.poll_site() is True
         assert set(controller.devices) == {"ok"}
 
+    @pytest.mark.covers("FC-DISC-01", "FC-DISC-02")
     async def test_discovers_hybrid_inverter_and_reads_it(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -639,6 +692,7 @@ class TestPollSite:
         assert inverter.mppt_count == 2
         assert controller.last_device_payloads["abc"]["pv"]["power"] == 1.5
 
+    @pytest.mark.covers("FC-DISC-07")
     async def test_discovery_survives_failed_device_read(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -648,6 +702,7 @@ class TestPollSite:
         assert "abc" in controller.devices
         assert controller.devices["abc"].discovery_state is None
 
+    @pytest.mark.covers("FC-DISC-03")
     async def test_model_block_name_is_the_device_label(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -662,6 +717,7 @@ class TestPollSite:
         assert device_field(info, "name") == "Eleven Energy Plus Mediterranean Sea 12"
         assert device_field(info, "model") == "Mediterranean Sea 12"
 
+    @pytest.mark.covers("FC-DISC-03")
     async def test_model_block_from_reading_when_listing_lacks_it(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -675,6 +731,7 @@ class TestPollSite:
         assert inverter.three_phase
         assert inverter.mppt_count == 3
 
+    @pytest.mark.covers("FC-DISC-03")
     async def test_name_used_when_no_model_block(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -686,6 +743,7 @@ class TestPollSite:
         assert await controller.poll_site() is True
         assert controller.devices["abc"].device_label == "Authoritative Name"
 
+    @pytest.mark.covers("FC-DISC-03")
     async def test_null_name_and_serial_are_coerced(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -698,6 +756,7 @@ class TestPollSite:
         assert device_field(info, "name") == "Eleven Energy Plus Inverter"
         assert device_field(info, "serial_number") == ""
 
+    @pytest.mark.covers("FC-DISC-03")
     async def test_device_label_override_wins_over_api(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -718,6 +777,7 @@ class TestPollSite:
         assert device_field(info, "name") == "Eleven Energy Plus My Label"
         assert device_field(info, "model") == "My Label"
 
+    @pytest.mark.covers("FC-DISC-01")
     async def test_non_hybrid_devices_skipped(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -734,6 +794,7 @@ class TestPollSite:
         assert await controller.poll_site() is True
         assert set(controller.devices) == {"y"}
 
+    @pytest.mark.covers("FC-DISC-01")
     async def test_known_devices_are_not_recreated(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -744,6 +805,7 @@ class TestPollSite:
         assert await controller.poll_site() is True
         assert controller.devices["abc"] is first
 
+    @pytest.mark.covers("FC-DISC-04")
     async def test_new_inverter_registered_without_duplicates(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -766,6 +828,7 @@ class TestInitialise:
     """The initial poll governs whether HA marks the entry ready, retries or reauths."""
 
     @pytest.mark.parametrize("status", [500, 503, 404])
+    @pytest.mark.covers("FC-LIFE-02")
     async def test_raises_not_ready_on_initial_failure(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker, status: int
     ) -> None:
@@ -773,6 +836,7 @@ class TestInitialise:
         with pytest.raises(ConfigEntryNotReady):
             await controller.initialise()
 
+    @pytest.mark.covers("FC-LIFE-02")
     async def test_raises_not_ready_on_network_error(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -780,6 +844,7 @@ class TestInitialise:
         with pytest.raises(ConfigEntryNotReady):
             await controller.initialise()
 
+    @pytest.mark.covers("FC-LIFE-02")
     async def test_raises_not_ready_on_malformed_payload(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -787,6 +852,7 @@ class TestInitialise:
         with pytest.raises(ConfigEntryNotReady):
             await controller.initialise()
 
+    @pytest.mark.covers("FC-LIFE-02")
     async def test_raises_not_ready_when_no_devices(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -795,6 +861,7 @@ class TestInitialise:
             await controller.initialise()
 
     @pytest.mark.parametrize("status", [401, 403])
+    @pytest.mark.covers("FC-AUTH-05")
     async def test_raises_auth_failed_on_rejected_credential(
         self,
         hass: HomeAssistant,
@@ -810,6 +877,7 @@ class TestInitialise:
         # setup; the controller must not start a second flow.
         assert _reauth_flows(hass) == []
 
+    @pytest.mark.covers("FC-AUTH-05")
     async def test_auth_failure_reading_device_during_discovery(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -822,6 +890,7 @@ class TestInitialise:
 class TestPollDevices:
     """The per-device poll loop isolates failures and drives availability."""
 
+    @pytest.mark.covers("FC-VAL-01")
     async def test_polls_device_and_updates_entity(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -837,6 +906,7 @@ class TestPollDevices:
         assert inverter.sensor_entities["pv.power"].native_value == 4.2
         assert inverter.sensor_entities["battery.stateOfCharge"].native_value == 65
 
+    @pytest.mark.covers("FC-AVAIL-01")
     async def test_one_device_failure_does_not_break_others(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -851,6 +921,7 @@ class TestPollDevices:
         await controller.poll_devices()
         assert controller.devices["good"].sensor_entities["pv.power"].native_value == 7.5
 
+    @pytest.mark.covers("FC-AVAIL-01")
     async def test_unavailable_after_repeated_failures_then_recovers(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -870,6 +941,7 @@ class TestPollDevices:
         assert inverter.sensor_entities["pv.power"].native_value == 1.0
 
     @pytest.mark.parametrize("body", [["list"], "text", None])
+    @pytest.mark.covers("FC-AVAIL-02")
     async def test_non_dict_device_payload_counts_as_failure(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker, body: Any
     ) -> None:
@@ -880,6 +952,7 @@ class TestPollDevices:
             await controller.poll_devices()
         assert not inverter.available
 
+    @pytest.mark.covers("FC-AUTH-06")
     async def test_rejected_credential_during_poll(
         self,
         hass: HomeAssistant,
@@ -908,6 +981,7 @@ class TestPollDevices:
 class TestOAuthCredential:
     """An account sign-in builds headers from a freshly validated token."""
 
+    @pytest.mark.covers("FC-AUTH-02", "FC-AUTH-04", "FC-TIME-05")
     async def test_headers_use_refreshed_access_token(
         self, hass: HomeAssistant, entry: MockConfigEntry
     ) -> None:
@@ -920,6 +994,7 @@ class TestOAuthCredential:
         session.async_ensure_token_valid.assert_awaited_once()
         assert controller.uses_account_sign_in
 
+    @pytest.mark.covers("FC-AUTH-07")
     async def test_refused_refresh_is_an_auth_failure(
         self, hass: HomeAssistant, entry: MockConfigEntry
     ) -> None:
@@ -934,6 +1009,7 @@ class TestOAuthCredential:
             await controller._auth_headers()
         assert controller.auth_failed
 
+    @pytest.mark.covers("FC-AUTH-04")
     async def test_transient_refresh_failure_is_an_api_error(
         self, hass: HomeAssistant, entry: MockConfigEntry
     ) -> None:
@@ -948,6 +1024,7 @@ class TestOAuthCredential:
             await controller._auth_headers()
         assert not controller.auth_failed
 
+    @pytest.mark.covers("FC-AUTH-09")
     async def test_missing_credential_is_an_auth_failure(
         self, hass: HomeAssistant, entry: MockConfigEntry
     ) -> None:
@@ -963,6 +1040,7 @@ class TestEntryUpdates:
         hass.config_entries.async_update_entry(entry, data={"token": "other"})
         assert controller.async_entry_updated() is False
 
+    @pytest.mark.covers("FC-OPT-02")
     async def test_interval_change_notifies_without_reload(
         self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
     ) -> None:
@@ -974,6 +1052,7 @@ class TestEntryUpdates:
         assert controller.poll_interval == 45
         assert controller._poll_now.is_set()
 
+    @pytest.mark.covers("FC-OPT-03")
     async def test_label_change_needs_reload(
         self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
     ) -> None:
@@ -1000,6 +1079,7 @@ class TestEntryUpdates:
     @pytest.mark.parametrize(
         ("raw", "expected"), [(None, 15), ("x", 15), (1, 5), (9999, 300), ("60", 60)]
     )
+    @pytest.mark.covers("FC-OPT-06")
     async def test_poll_interval_is_clamped(
         self, hass: HomeAssistant, entry: MockConfigEntry, raw: Any, expected: int
     ) -> None:
@@ -1023,6 +1103,7 @@ class TestTerminate:
         assert controller._terminated is True
         assert controller._shutdown.is_set()
 
+    @pytest.mark.covers("FC-AVAIL-04")
     async def test_terminate_cancels_running_task(self, controller: Controller) -> None:
         async def long_running() -> None:
             await asyncio.sleep(60)
@@ -1041,6 +1122,7 @@ class TestTerminate:
             controller.complete_platform_setup(platform, lambda entities: None)
         assert controller.poller_task is None
 
+    @pytest.mark.covers("FC-POLL-01", "FC-LIFE-01")
     async def test_poller_runs_and_stops(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -1065,3 +1147,615 @@ class TestTerminate:
 
         await controller.terminate()
         assert controller.poller_task is None
+
+    async def test_a_crashed_poll_task_is_reported_on_termination(
+        self, controller: Controller, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def crash() -> None:
+            raise RuntimeError("poller bug")
+
+        task = asyncio.create_task(crash())
+        await asyncio.sleep(0)
+        controller.poller_task = task
+        await controller.terminate()
+        assert "poll task raised during termination" in caplog.text
+
+    async def test_an_initial_poll_crash_is_contained(
+        self, controller: Controller, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def crash(*args: Any, **kwargs: Any) -> bool:
+            controller._shutdown.set()
+            raise RuntimeError("first poll bug")
+
+        controller.poll_devices = crash  # type: ignore[method-assign]
+        controller.start_poller()
+        assert controller.poller_task is not None
+        await asyncio.wait({controller.poller_task}, timeout=1)
+        assert controller.poller_task.done() and not controller.poller_task.cancelled()
+        assert "initial device poll failed" in caplog.text
+
+    async def test_a_poll_cycle_crash_is_contained(
+        self, controller: Controller, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        calls = 0
+
+        async def crash() -> None:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                controller._shutdown.set()
+            raise RuntimeError("cycle bug")
+
+        controller._poll_cycle = crash  # type: ignore[method-assign]
+        controller.start_poller()
+        for _ in range(3):
+            controller._poll_now.set()
+            for _ in range(10):
+                await asyncio.sleep(0)
+        assert "poll cycle failed" in caplog.text
+        await controller.terminate()
+
+
+class TestPollCycle:
+    """One poll cycle, and the places it stops early."""
+
+    @pytest.fixture
+    def inverter_abc(self, controller: Controller) -> HybridInverter:
+        device = HybridInverter(controller.hass, controller, "abc", "Inverter", "SN")
+        controller.devices["abc"] = device
+        return device
+
+    @pytest.mark.usefixtures("inverter_abc")
+    async def test_does_nothing_while_rejected_and_not_due(
+        self, controller: Controller, aioclient_mock: AiohttpClientMocker
+    ) -> None:
+        controller._handle_auth_failure(401)
+        await controller._poll_cycle()
+        assert aioclient_mock.call_count == 0
+
+    @pytest.mark.usefixtures("inverter_abc")
+    async def test_stops_when_the_site_poll_rejects_the_credential(
+        self, controller: Controller, aioclient_mock: AiohttpClientMocker
+    ) -> None:
+        aioclient_mock.get(f"{BASE_URL}site", status=401)
+        aioclient_mock.get(f"{BASE_URL}devices/abc", json={})
+        assert await controller.poll_site() is False
+        assert controller.auth_failed
+        controller._auth_failed = False
+        await controller._poll_cycle()
+        assert [str(call[1]) for call in aioclient_mock.mock_calls] == [f"{BASE_URL}site"] * 2
+
+    @pytest.mark.usefixtures("inverter_abc")
+    async def test_reports_nothing_when_devices_reject_the_credential(
+        self, controller: Controller, aioclient_mock: AiohttpClientMocker
+    ) -> None:
+        aioclient_mock.get(f"{BASE_URL}site", json=site_payload(site_summary()))
+        aioclient_mock.get(f"{BASE_URL}devices/abc", status=401)
+        controller.faults.report_poll_cycle = MagicMock()  # type: ignore[method-assign]
+        await controller._poll_cycle()
+        controller.faults.report_poll_cycle.assert_not_called()
+
+    @pytest.mark.usefixtures("inverter_abc")
+    async def test_reports_nothing_when_shut_down_mid_cycle(
+        self, controller: Controller, aioclient_mock: AiohttpClientMocker
+    ) -> None:
+        aioclient_mock.get(f"{BASE_URL}site", json=site_payload(site_summary()))
+        real_poll_devices = controller.poll_devices
+
+        async def poll_then_stop(**kwargs: Any) -> bool:
+            controller._shutdown.set()
+            return await real_poll_devices(**kwargs)
+
+        controller.poll_devices = poll_then_stop  # type: ignore[method-assign]
+        controller.faults.report_poll_cycle = MagicMock()  # type: ignore[method-assign]
+        await controller._poll_cycle()
+        controller.faults.report_poll_cycle.assert_not_called()
+        assert all("devices" not in str(call[1]) for call in aioclient_mock.mock_calls)
+
+    async def test_first_payload_debug_log_is_truncated(
+        self,
+        controller: Controller,
+        inverter_abc: HybridInverter,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger="custom_components.eleven_energy_plus.controller")
+        controller._apply_device_payload(inverter_abc, {"blob": "x" * 5000})
+        assert "(truncated)" in caplog.text
+
+
+class TestHousekeeping:
+    """Small contracts of the controller's bookkeeping."""
+
+    @pytest.mark.covers("FC-POLL-02")
+    async def test_a_shorter_rate_limit_hint_never_shortens_a_deferral(
+        self, controller: Controller
+    ) -> None:
+        controller._defer_polls(ElevenEnergyRateLimitedError("slow down", 200.0))
+        controller._defer_polls(ElevenEnergyRateLimitedError("slow down", 10.0))
+        assert controller._poll_deferral() > 190
+        controller._defer_polls(ElevenEnergyRateLimitedError("no hint", None))
+        assert controller._poll_deferral() > 190
+
+    async def test_rate_limit_errors_say_what_was_limited(self, controller: Controller) -> None:
+        err = controller._rate_limited("the site API", "12")
+        assert str(err) == "the site API was rate limited (HTTP 429)"
+        assert err.retry_after == 12.0
+
+    @pytest.mark.covers("FC-OPT-02")
+    async def test_an_unchanged_entry_update_pings_nobody(
+        self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
+    ) -> None:
+        pings = MagicMock()
+        controller.add_option_listener(pings)
+        hass.config_entries.async_update_entry(entry, options={CONF_POLL_INTERVAL: 60})
+        assert controller.async_entry_updated() is False
+        assert controller.async_entry_updated() is False
+        assert pings.call_count == 1
+
+    @pytest.mark.covers("FC-DISC-05")
+    async def test_forgetting_a_device_drops_everything_about_it(
+        self, controller: Controller
+    ) -> None:
+        device = HybridInverter(controller.hass, controller, "abc", "Inverter", "SN")
+        controller.devices["abc"] = device
+        controller._last_device_payloads["abc"] = {"pv": {}}
+        controller._missing_listings["abc"] = 1
+        controller.forget_device("abc")
+        assert controller.devices == {}
+        assert controller.last_device_payloads == {}
+        assert controller._missing_listings == {}
+        assert not device.is_running()
+
+    async def test_adding_no_entities_calls_nothing(self, controller: Controller) -> None:
+        callback = MagicMock()
+        controller.register_platform("sensor", callback)
+        controller.add_entities("sensor", [])
+        callback.assert_not_called()
+
+    async def test_forgetting_an_unknown_device_is_harmless(self, controller: Controller) -> None:
+        controller.forget_device("never-seen")
+        assert controller.devices == {}
+
+    async def test_recovery_withdraws_only_reauthentication(
+        self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
+    ) -> None:
+        await entry.start_reconfigure_flow(hass)
+        entry.async_start_reauth(hass)
+        await hass.async_block_till_done()
+        controller._auth_failed = True
+        controller._recover_auth()
+        sources = [flow["context"]["source"] for flow in hass.config_entries.flow.async_progress()]
+        assert sources == ["reconfigure"]
+
+    async def test_nothing_is_known_before_the_first_poll(self, controller: Controller) -> None:
+        assert controller.last_site_payload is None
+        assert controller.last_device_payloads == {}
+        assert not controller.auth_failed
+        assert not controller.terminated
+
+    @pytest.mark.covers("FC-AUTH-09")
+    @pytest.mark.parametrize("token", [123, "", None])
+    async def test_a_credential_that_is_not_text_is_never_sent(
+        self, hass: HomeAssistant, entry: MockConfigEntry, token: Any
+    ) -> None:
+        controller = Controller(token, hass, entry)
+        with pytest.raises(ElevenEnergyAuthError):
+            await controller._auth_headers()
+
+    async def test_an_unsubscribed_listener_is_not_pinged(self, controller: Controller) -> None:
+        listener = MagicMock()
+        unsubscribe = controller.add_option_listener(listener)
+        unsubscribe()
+        controller.notify_options_changed()
+        listener.assert_not_called()
+
+    async def test_options_that_never_changed_ping_nobody(
+        self, controller: Controller
+    ) -> None:
+        listener = MagicMock()
+        controller.add_option_listener(listener)
+        assert controller.async_entry_updated() is False
+        listener.assert_not_called()
+
+    async def test_every_request_has_a_timeout(
+        self, controller: Controller, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from custom_components.eleven_energy_plus import controller as controller_module
+
+        seen: dict[str, Any] = {}
+
+        class _Response:
+            status = 200
+            headers: ClassVar[dict[str, str]] = {}
+
+            async def json(self, **kwargs: Any) -> Any:
+                return {"devices": []}
+
+        class _Request:
+            async def __aenter__(self) -> _Response:
+                return _Response()
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+        class _Session:
+            def request(self, method: str, url: str, **kwargs: Any) -> _Request:
+                seen.update(kwargs, method=method, url=url)
+                return _Request()
+
+        monkeypatch.setattr(controller_module, "async_get_clientsession", lambda hass: _Session())
+        assert await controller._request("GET", "site") == (200, {"devices": []}, None)
+        assert seen["timeout"] is controller_module.API_TIMEOUT
+        assert seen["method"] == "GET"
+        assert seen["url"] == f"{BASE_URL}site"
+        assert seen["headers"] == {
+            "accept": "application/json",
+            "Authorization": "Bearer test-token",
+            "Content-Type": "application/json",
+        }
+
+    @pytest.mark.covers("FC-POLL-02", "FC-NOTIF-01")
+    async def test_any_deferral_left_counts_as_the_api_answering(
+        self, controller: Controller, aioclient_mock: AiohttpClientMocker, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from custom_components.eleven_energy_plus import controller as controller_module
+
+        class _Clock:
+            @staticmethod
+            def monotonic() -> float:
+                return 1000.0
+
+        monkeypatch.setattr(controller_module, "time", _Clock)
+        aioclient_mock.get(f"{BASE_URL}site", status=429, headers={"Retry-After": "1"})
+        controller.faults.report_poll_cycle = MagicMock()  # type: ignore[method-assign]
+        await controller._poll_cycle()
+        assert controller._poll_deferral() == 1.0
+        controller.faults.report_poll_cycle.assert_called_once_with(True)
+
+
+class TestWorkModeContract:
+    """The exact command each work mode sends, and how refusals are reported."""
+
+    @pytest.mark.covers("FC-SVC-06")
+    @pytest.mark.parametrize(
+        ("service", "data", "body"),
+        [
+            ("set_work_mode_self_consumption", {"percent_to_battery": 60},
+             {"workMode": "selfConsumption", "targetExcessPc": 60.0}),
+            ("set_work_mode_force_charge", {"target_power": 3.5, "target_percent": 80},
+             {"workMode": "forceCharge", "rate": 3.5, "targetSoc": 80.0}),
+            ("set_work_mode_grid_export",
+             {"target_power": 5, "target_percent": 20, "include_excess_solar": True, "overdrive": False},
+             {"workMode": "gridExport", "rate": 5.0, "targetSoc": 20.0, "addAverageExcess": True, "overdrive": False}),
+            ("set_work_mode_pv_export", {}, {"workMode": "pvExportPriority"}),
+            ("set_work_mode_idle_battery", {"allow_charging": True, "allow_discharging": False},
+             {"workMode": "idleBattery", "allowCharge": True, "allowDischarge": False}),
+            ("set_work_mode_target_soc",
+             {"target_soc": 90, "target_minutes": 120, "max_charge_power": 4, "max_discharge_power": 2.5},
+             {"workMode": "targetSoc", "targetSoc": 90.0, "targetMinutes": 120,
+              "maxChargeRate": 4.0, "maxDischargeRate": 2.5}),
+            ("set_work_mode_reset", {}, {"workMode": "reset"}),
+        ],
+    )
+    async def test_each_work_mode_sends_exactly_its_api_fields(
+        self,
+        controller: Controller,
+        aioclient_mock: AiohttpClientMocker,
+        service: str,
+        data: dict[str, Any],
+        body: dict[str, Any],
+    ) -> None:
+        """A wrong key would be ignored by the inverter, so every key is pinned."""
+        controller.devices["abc"] = _fake_inverter()
+        aioclient_mock.post(POST_URL, status=200)
+        result = await controller.set_work_mode(service, data)
+        assert result["success"] is True
+        assert aioclient_mock.mock_calls[-1][2] == body
+        assert set(result["params"]) == set(data)
+
+    @pytest.mark.covers("FC-SVC-08")
+    @pytest.mark.parametrize(
+        ("service", "data", "auth_failed", "kind"),
+        [
+            ("set_work_mode_nonsense", {}, False, "invalid_request"),
+            ("set_work_mode_force_charge", {"target_power": 3}, False, "invalid_request"),
+            ("set_work_mode_reset", {}, True, "credential_rejected"),
+        ],
+        ids=["unknown_service", "missing_field", "credential_rejected"],
+    )
+    async def test_refusals_send_nothing_and_say_why(
+        self,
+        controller: Controller,
+        aioclient_mock: AiohttpClientMocker,
+        service: str,
+        data: dict[str, Any],
+        auth_failed: bool,
+        kind: str,
+    ) -> None:
+        controller.devices["abc"] = _fake_inverter()
+        controller._auth_failed = auth_failed
+        result = await controller.set_work_mode(service, data)
+        assert result["error_kind"] == kind
+        assert result["attempts"] == 0
+        assert result["status"] is None
+        assert aioclient_mock.call_count == 0
+
+    async def test_missing_fields_are_all_named(self, controller: Controller) -> None:
+        controller.devices["abc"] = _fake_inverter()
+        result = await controller.set_work_mode("set_work_mode_target_soc", {})
+        assert result["error"] == "missing required field(s): target_soc, target_minutes"
+        result = await controller.set_work_mode(
+            "set_work_mode_target_soc", {"target_soc": 500, "target_minutes": 0}
+        )
+        assert result["error"] == "invalid value for field(s): target_soc, target_minutes"
+
+    @pytest.mark.covers("FC-SVC-13", "FC-NOTIF-04")
+    async def test_an_internal_error_before_the_target_is_known_is_reported_for_the_site(
+        self, hass: HomeAssistant, controller: Controller, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from homeassistant.helpers import issue_registry as ir
+
+        def _bug(data: Any) -> Any:
+            raise RuntimeError("resolver bug")
+
+        monkeypatch.setattr(controller, "_resolve_target_device", _bug)
+        result = await controller.set_work_mode("set_work_mode_reset", {})
+        assert result["error"] == "internal error (RuntimeError: resolver bug)"
+        assert result["error_kind"] == "internal_error"
+        assert result["success"] is False
+        issue = ir.async_get(hass).async_get_issue(DOMAIN, "work_mode_failed_site")
+        assert issue is not None
+        assert issue.translation_placeholders["name"] == "Eleven Energy Plus"
+
+    @pytest.mark.covers("FC-NOTIF-04")
+    async def test_a_failed_command_names_its_inverter(
+        self,
+        hass: HomeAssistant,
+        controller: Controller,
+        aioclient_mock: AiohttpClientMocker,
+        instant_backoff: list[float],
+    ) -> None:
+        from homeassistant.helpers import issue_registry as ir
+
+        controller.devices["abc"] = _fake_inverter()
+        aioclient_mock.post(POST_URL, status=500)
+        await controller.set_work_mode("set_work_mode_reset", {})
+        issue = ir.async_get(hass).async_get_issue(DOMAIN, "work_mode_failed_abc")
+        assert issue is not None
+        assert issue.translation_placeholders["name"] == "Eleven Energy Plus abc"
+
+    async def test_shutdown_before_the_first_attempt_sends_nothing(
+        self, controller: Controller, aioclient_mock: AiohttpClientMocker
+    ) -> None:
+        controller._shutdown.set()
+        result = await controller.send_reliable_post("devices/abc/operatingMode", {})
+        assert result == PostResult(
+            status=None,
+            body=None,
+            attempts=0,
+            error="aborted because Eleven Energy Plus is shutting down",
+            kind="aborted",
+        )
+
+    async def test_api_failures_are_api_errors_with_the_reason(
+        self, controller: Controller, aioclient_mock: AiohttpClientMocker, instant_backoff: list[float]
+    ) -> None:
+        aioclient_mock.post(POST_URL, exc=aiohttp.ClientError("connection reset"))
+        result = await controller.send_reliable_post("devices/abc/operatingMode", {})
+        assert result.kind == "api_error"
+        assert "connection reset" in str(result.error)
+        aioclient_mock.clear_requests()
+        aioclient_mock.post(POST_URL, status=400)
+        result = await controller.send_reliable_post("devices/abc/operatingMode", {})
+        assert result.kind == "api_error"
+        assert result.status == 400
+        assert result.body is None
+
+
+class TestTargetsAndListing:
+    """Corners of target resolution and of following the site listing."""
+
+    async def test_an_area_holding_only_an_entity_resolves(
+        self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
+    ) -> None:
+        controller.devices["a"] = _fake_inverter("a")
+        controller.devices["b"] = _fake_inverter("b")
+        area = ar.async_get(hass).async_create("Loft")
+        device = _register_device(hass, entry, "a")
+        _register_device(hass, entry, "b")
+        entity = er.async_get(hass).async_get_or_create(
+            "sensor", DOMAIN, "a_pv_power", config_entry=entry, device_id=device.id
+        )
+        # Home Assistant only lets an entity with its own name have its own area.
+        er.async_get(hass).async_update_entity(entity.entity_id, name="Loft PV", area_id=area.id)
+        assert controller._resolve_target_device({"area_id": area.id}) == ("a", None)
+
+    async def test_an_unknown_device_id_does_not_hide_a_known_one(
+        self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
+    ) -> None:
+        controller.devices["a"] = _fake_inverter("a")
+        device = _register_device(hass, entry, "a")
+        assert controller._resolve_target_device(
+            {"device_id": ["no-such-device", device.id]}
+        ) == ("a", None)
+
+    async def test_a_device_of_ours_the_controller_no_longer_knows_is_refused(
+        self, hass: HomeAssistant, entry: MockConfigEntry, controller: Controller
+    ) -> None:
+        controller.devices["a"] = _fake_inverter("a")
+        gone = _register_device(hass, entry, "gone")
+        other = dr.async_get(hass).async_get_or_create(
+            config_entry_id=entry.entry_id, identifiers={("other_domain", "a")}
+        )
+        assert controller._resolve_target_device({"device_id": [gone.id]})[0] is None
+        assert controller._resolve_target_device({"device_id": [other.id]})[0] is None
+
+    @pytest.mark.covers("FC-DISC-05")
+    async def test_the_missing_count_restarts_when_an_inverter_is_listed_again(
+        self, hass: HomeAssistant, controller: Controller
+    ) -> None:
+        from homeassistant.helpers import issue_registry as ir
+
+        device = HybridInverter(hass, controller, "a", "Inverter", "SN")
+        controller.devices["a"] = device
+        controller._track_missing([])
+        controller._track_missing([])
+        assert device.missing is True
+        issue = ir.async_get(hass).async_get_issue(DOMAIN, "inverter_missing_a")
+        assert issue is not None
+        assert issue.translation_placeholders["name"] == "Eleven Energy Plus Inverter"
+        controller._track_missing(["a"])
+        assert device.missing is False
+        controller._track_missing([])
+        assert device.missing is False, "one listing without it is not enough again"
+
+    async def test_a_missing_inverter_does_not_stop_the_others_being_polled(
+        self, hass: HomeAssistant, controller: Controller, aioclient_mock: AiohttpClientMocker
+    ) -> None:
+        first = HybridInverter(hass, controller, "a", "A", "SN")
+        second = HybridInverter(hass, controller, "b", "B", "SN")
+        controller.devices.update(a=first, b=second)
+        first.set_missing(True)
+        aioclient_mock.get(f"{BASE_URL}devices/b", json={"pv": {"power": 1.0}})
+        assert await controller.poll_devices() is True
+        assert second.sensor_entities["pv.power"].native_value == 1.0
+
+    @pytest.mark.covers("FC-POLL-02")
+    async def test_a_rate_limited_site_poll_defers_polling(
+        self, controller: Controller, aioclient_mock: AiohttpClientMocker
+    ) -> None:
+        aioclient_mock.get(f"{BASE_URL}site", status=429, headers={"Retry-After": "120"})
+        assert await controller.poll_site() is False
+        assert controller._poll_deferral() > 119
+
+    async def test_a_successful_site_poll_is_kept_for_diagnostics(
+        self, controller: Controller, aioclient_mock: AiohttpClientMocker
+    ) -> None:
+        payload = site_payload(site_summary("zzz", device_type="thermostat"))
+        aioclient_mock.get(f"{BASE_URL}site", json=payload)
+        assert await controller.poll_site() is True
+        assert controller.last_site_payload == payload
+
+    @pytest.mark.covers("FC-DISC-02", "FC-DISC-07")
+    async def test_discovery_keeps_the_serial_and_does_not_count_a_failed_read(
+        self, hass: HomeAssistant, controller: Controller, aioclient_mock: AiohttpClientMocker
+    ) -> None:
+        aioclient_mock.get(f"{BASE_URL}devices/abc", status=500)
+        await controller._discover("abc", site_summary(serial="SN-42"))
+        inverter = controller.devices["abc"]
+        assert device_field(inverter.device_info, "serial_number") == "SN-42"
+        assert inverter.api_connected is None
+        assert controller.last_device_payloads == {}
+
+    async def test_a_processing_failure_logs_its_traceback_once_per_run(
+        self,
+        hass: HomeAssistant,
+        controller: Controller,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        inverter = HybridInverter(hass, controller, "abc", "Inverter", "SN")
+        controller.devices["abc"] = inverter
+        real_update = HybridInverter.update
+
+        def tracebacks() -> int:
+            return sum(1 for record in caplog.records if record.exc_info)
+
+        monkeypatch.setattr(HybridInverter, "update", lambda self, payload: 1 / 0)
+        controller._apply_device_payload(inverter, {})
+        controller._apply_device_payload(inverter, {})
+        assert tracebacks() == 1
+        monkeypatch.setattr(HybridInverter, "update", real_update)
+        controller._apply_device_payload(inverter, {})
+        monkeypatch.setattr(HybridInverter, "update", lambda self, payload: 1 / 0)
+        controller._apply_device_payload(inverter, {})
+        assert tracebacks() == 2
+
+    @pytest.mark.covers("FC-AUTH-08")
+    async def test_a_second_rejection_after_recovery_is_retested_too(
+        self, hass: HomeAssistant, controller: Controller, aioclient_mock: AiohttpClientMocker,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("custom_components.eleven_energy_plus.controller.AUTH_RECOVERY_SECONDS", 0)
+        controller._handle_auth_failure(None)
+        controller._recover_auth()
+        controller._handle_auth_failure(401)
+        aioclient_mock.get(f"{BASE_URL}site", json=site_payload())
+        assert await controller._check_auth_recovered() is True
+
+
+class TestPollerLoop:
+    """The background loop keeps going through timeouts and rate limits."""
+
+    async def test_the_poller_waits_again_after_each_interval_and_during_a_deferral(
+        self, controller: Controller, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from custom_components.eleven_energy_plus import controller as controller_module
+
+        waits: list[float] = []
+        cycles = 0
+
+        async def _cycle() -> None:
+            nonlocal cycles
+            cycles += 1
+
+        async def _wait_for(awaitable: Any, timeout: float | None = None) -> Any:  # noqa: ASYNC109 - stands in for asyncio.wait_for
+            awaitable.close()
+            waits.append(timeout or 0.0)
+            if len(waits) == 2:
+                controller._polls_deferred_until = controller_module.time.monotonic() + 50
+                controller._poll_now.set()
+                return True
+            if len(waits) >= 3:
+                controller._shutdown.set()
+            raise TimeoutError
+
+        async def _no_devices(**kwargs: Any) -> bool:
+            return False
+
+        controller.poll_devices = _no_devices  # type: ignore[method-assign]
+        controller._poll_cycle = _cycle  # type: ignore[method-assign]
+        monkeypatch.setattr(controller_module.asyncio, "wait_for", _wait_for)
+        controller.start_poller()
+        assert controller.poller_task is not None
+        await asyncio.wait({controller.poller_task}, timeout=1)
+        assert len(waits) == 3, "a timeout and a wake during a deferral both loop again"
+        assert cycles == 1, "no cycle runs while polling is deferred"
+
+    async def test_a_wake_with_one_second_of_deferral_left_still_waits(
+        self, controller: Controller, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from custom_components.eleven_energy_plus import controller as controller_module
+
+        class _Clock:
+            @staticmethod
+            def monotonic() -> float:
+                return 1000.0
+
+        monkeypatch.setattr(controller_module, "time", _Clock)
+        controller._polls_deferred_until = 1001.0
+        cycles = 0
+        wakes = 0
+
+        async def _cycle() -> None:
+            nonlocal cycles
+            cycles += 1
+
+        async def _wait_for(awaitable: Any, timeout: float | None = None) -> Any:  # noqa: ASYNC109 - stands in for asyncio.wait_for
+            nonlocal wakes
+            awaitable.close()
+            wakes += 1
+            if wakes > 1:
+                controller._shutdown.set()
+            return True
+
+        async def _no_devices(**kwargs: Any) -> bool:
+            return False
+
+        controller.poll_devices = _no_devices  # type: ignore[method-assign]
+        controller._poll_cycle = _cycle  # type: ignore[method-assign]
+        monkeypatch.setattr(controller_module.asyncio, "wait_for", _wait_for)
+        controller.start_poller()
+        assert controller.poller_task is not None
+        await asyncio.wait({controller.poller_task}, timeout=1)
+        assert cycles == 0

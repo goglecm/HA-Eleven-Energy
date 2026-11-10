@@ -43,6 +43,7 @@ def _config(device_id: str, action_type: str, **fields) -> dict:
 class TestListing:
     """Every work mode is offered for an Eleven Energy Plus inverter."""
 
+    @pytest.mark.covers("FC-DEVACT-01")
     async def test_actions_for_our_device(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -52,6 +53,7 @@ class TestListing:
         assert all(action[CONF_DEVICE_ID] == device.id for action in actions)
         assert all(action[CONF_DOMAIN] == DOMAIN for action in actions)
 
+    @pytest.mark.covers("FC-DEVACT-01")
     async def test_no_actions_for_other_devices(self, hass: HomeAssistant) -> None:
         other = MockConfigEntry(domain="other")
         other.add_to_hass(hass)
@@ -71,6 +73,7 @@ class TestCapabilities:
     """Each action offers exactly the fields its work mode uses."""
 
     @pytest.mark.parametrize("action_type", device_action.ACTION_TYPES)
+    @pytest.mark.covers("FC-DEVACT-02")
     async def test_fields_match_service(
         self, hass: HomeAssistant, action_type: str
     ) -> None:
@@ -88,6 +91,7 @@ class TestCapabilities:
 class TestValidation:
     """Device action configs are validated when the automation loads."""
 
+    @pytest.mark.covers("FC-DEVACT-03")
     async def test_valid_config(self, hass: HomeAssistant) -> None:
         config = await device_action.async_validate_action_config(
             hass, _config("x", "force_charge", target_power="3.5", target_percent=80)
@@ -105,6 +109,7 @@ class TestValidation:
             ("not_a_mode", {}, None),
         ],
     )
+    @pytest.mark.covers("FC-DEVACT-03")
     async def test_invalid_config(
         self, hass: HomeAssistant, action_type: str, fields: dict, message: str | None
     ) -> None:
@@ -119,6 +124,7 @@ class TestValidation:
 class TestCalling:
     """A device action calls the action behind it, targeting its device."""
 
+    @pytest.mark.covers("FC-DEVACT-04")
     async def test_call_targets_the_device(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -135,6 +141,7 @@ class TestCalling:
             "overdrive": True,
         }
 
+    @pytest.mark.covers("FC-DEVACT-04")
     async def test_failure_raises(
         self,
         hass: HomeAssistant,

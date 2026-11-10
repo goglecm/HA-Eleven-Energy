@@ -32,6 +32,31 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "${{ matrix.requirement }}"
+          python -m pip install "${{ matrix.requirement }}" hypothesis==6.170.15
+      # Full run: 100 % line + branch coverage and the functional-coverage
+      # gate (tests/functional_coverage.py) are both enforced.
       - name: Run the test suite
-        run: python -m pytest
+        run: >
+          python -m pytest
+          --cov=custom_components/eleven_energy_plus
+          --cov-branch --cov-report=term-missing --cov-fail-under=100
+
+  canary:
+    # Early warning for the newest Home Assistant, which usually lands before
+    # a matching test package. Non-blocking: a failure here is a heads-up.
+    name: pytest (newest Home Assistant, canary)
+    runs-on: "ubuntu-latest"
+    continue-on-error: true
+    steps:
+      - uses: "actions/checkout@v7"
+      - uses: "actions/setup-python@v7"
+        with:
+          python-version: "3.14"
+      - name: Install newest Home Assistant over the latest test package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest-homeassistant-custom-component hypothesis==6.170.15
+          python -m pip install --upgrade --no-deps homeassistant
+          python tests/compat/install_missing_requirements.py
+      - name: Run the test suite
+        run: python tests/compat/run_newest_ha.py

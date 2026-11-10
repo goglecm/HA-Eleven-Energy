@@ -11,7 +11,12 @@ import voluptuous as vol
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+    ServiceValidationError,
+)
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -60,6 +65,7 @@ async def _call(
 class TestSetupAndUnload:
     """Happy path lifecycle plus retry-on-failure behaviour."""
 
+    @pytest.mark.covers("FC-LIFE-01", "FC-AUTH-01")
     async def test_setup_and_unload_happy_path(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -95,6 +101,7 @@ class TestSetupAndUnload:
         assert controller.poller_task is None
         assert controller._shutdown.is_set()
 
+    @pytest.mark.covers("FC-LIFE-02")
     async def test_setup_retries_on_no_devices(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -103,6 +110,7 @@ class TestSetupAndUnload:
         await setup_entry(hass, entry)
         assert entry.state is ConfigEntryState.SETUP_RETRY
 
+    @pytest.mark.covers("FC-LIFE-02")
     async def test_setup_retries_on_5xx(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -111,6 +119,7 @@ class TestSetupAndUnload:
         await setup_entry(hass, entry)
         assert entry.state is ConfigEntryState.SETUP_RETRY
 
+    @pytest.mark.covers("FC-LIFE-02")
     async def test_setup_retries_on_network_error(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -120,6 +129,7 @@ class TestSetupAndUnload:
         assert entry.state is ConfigEntryState.SETUP_RETRY
 
     @pytest.mark.parametrize("status", [401, 403])
+    @pytest.mark.covers("FC-AUTH-05")
     async def test_rejected_credential_at_setup_starts_reauth(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, status: int
     ) -> None:
@@ -135,11 +145,13 @@ class TestSetupAndUnload:
         assert len(flows) == 1
         assert flows[0]["step_id"] == "reauth_confirm"
 
+    @pytest.mark.covers("FC-AUTH-09")
     async def test_missing_token_starts_reauth(self, hass: HomeAssistant) -> None:
         entry = api_key_entry(data={"token": "  "})
         await setup_entry(hass, entry)
         assert entry.state is ConfigEntryState.SETUP_ERROR
 
+    @pytest.mark.covers("FC-LIFE-03")
     async def test_platform_forward_failure_rolls_back(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -155,6 +167,7 @@ class TestSetupAndUnload:
         assert entry.state is not ConfigEntryState.LOADED
         assert entry.runtime_data._terminated
 
+    @pytest.mark.covers("FC-LIFE-06")
     async def test_yaml_configuration_is_not_supported(self, hass: HomeAssistant) -> None:
         assert await async_setup_component(hass, DOMAIN, {})
         for service in SERVICE_NAMES:
@@ -164,6 +177,7 @@ class TestSetupAndUnload:
 class TestReloadAndOptions:
     """Reloads keep the actions; options apply live or reload as appropriate."""
 
+    @pytest.mark.covers("FC-SVC-11", "FC-LIFE-04")
     async def test_services_survive_reload(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -181,6 +195,7 @@ class TestReloadAndOptions:
         response = await _call(hass, "set_work_mode_reset", response=True)
         assert response["success"] is True
 
+    @pytest.mark.covers("FC-SVC-11")
     async def test_services_stay_registered_after_unload(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -197,6 +212,7 @@ class TestReloadAndOptions:
             await _call(hass, "set_work_mode_reset", response=False)
         assert err.value.translation_key == "not_loaded"
 
+    @pytest.mark.covers("FC-OPT-02")
     async def test_interval_option_applies_live(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -217,6 +233,7 @@ class TestReloadAndOptions:
         assert controller.poll_interval == 45
         assert hass.states.get("number.abc_poll_interval").state == "45.0"
 
+    @pytest.mark.covers("FC-OPT-03")
     async def test_label_override_change_reloads(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -234,6 +251,7 @@ class TestReloadAndOptions:
         assert entry.state is ConfigEntryState.LOADED
         assert _our_device(hass, entry).name == "Eleven Energy Plus My Inverter"
 
+    @pytest.mark.covers("FC-AUTH-03")
     async def test_credential_data_change_alone_does_not_reload(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -248,6 +266,7 @@ class TestReloadAndOptions:
         reload.assert_not_called()
         assert entry.runtime_data is controller
 
+    @pytest.mark.covers("FC-OPT-05")
     async def test_number_entity_updates_options(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -268,6 +287,7 @@ class TestReloadAndOptions:
 class TestAvailability:
     """Entity states follow the inverter's availability."""
 
+    @pytest.mark.covers("FC-AVAIL-01", "FC-AVAIL-05")
     async def test_entities_go_unavailable_and_recover(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -294,6 +314,7 @@ class TestAvailability:
         await hass.async_block_till_done()
         assert hass.states.get("sensor.abc_pv_power").state == "2.5"
 
+    @pytest.mark.covers("FC-AUTH-06")
     async def test_rejected_credential_at_runtime(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -316,6 +337,7 @@ class TestAvailability:
 class TestServiceResponse:
     """The set_work_mode_* actions validate, respond, and raise when unheard."""
 
+    @pytest.mark.covers("FC-SVC-06")
     async def test_success_with_response(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -337,8 +359,10 @@ class TestServiceResponse:
             "params": {"target_power": 3.5, "target_percent": 80.0},
             "attempts": 1,
             "error": None,
+            "error_kind": None,
         }
 
+    @pytest.mark.covers("FC-SVC-06")
     async def test_success_without_response(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -347,6 +371,7 @@ class TestServiceResponse:
         assert await setup_entry(hass, api_key_entry())
         assert await _call(hass, "set_work_mode_pv_export", response=False) is None
 
+    @pytest.mark.covers("FC-SVC-07")
     async def test_api_failure_raises_without_response(
         self,
         hass: HomeAssistant,
@@ -363,6 +388,7 @@ class TestServiceResponse:
         assert err.value.translation_key == "work_mode_failed"
         assert err.value.translation_placeholders["error"] == "API returned status 500"
 
+    @pytest.mark.covers("FC-SVC-07")
     async def test_api_failure_returned_with_response(
         self,
         hass: HomeAssistant,
@@ -395,6 +421,7 @@ class TestServiceResponse:
             ),
         ],
     )
+    @pytest.mark.covers("FC-SVC-01")
     async def test_invalid_input_is_rejected_before_sending(
         self,
         hass: HomeAssistant,
@@ -411,6 +438,7 @@ class TestServiceResponse:
         posts_after = sum(1 for call in aioclient_mock.mock_calls if call[0] == "POST")
         assert posts_after == posts_before
 
+    @pytest.mark.covers("FC-SVC-05")
     async def test_legacy_percentage_alias(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -426,6 +454,7 @@ class TestServiceResponse:
         assert response["params"] == {"percent_to_battery": 40.0}
         assert aioclient_mock.mock_calls[-1][2]["targetExcessPc"] == 40.0
 
+    @pytest.mark.covers("FC-SVC-01")
     async def test_numeric_strings_from_templates_are_accepted(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -446,6 +475,7 @@ class TestServiceResponse:
             "maxChargeRate": 4.5,
         }
 
+    @pytest.mark.covers("FC-SVC-10")
     async def test_target_problems_raise_validation_error(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -457,6 +487,7 @@ class TestServiceResponse:
             )
         assert err.value.translation_key == "invalid_request"
 
+    @pytest.mark.covers("FC-SVC-09")
     async def test_device_field_targets_the_right_inverter(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -487,6 +518,7 @@ class TestServiceResponse:
         )
         assert response["device_id"] == "b"
 
+    @pytest.mark.covers("FC-SVC-12")
     async def test_not_loaded_returns_or_raises(self, hass: HomeAssistant) -> None:
         assert await async_setup_component(hass, DOMAIN, {})
         response = await _call(hass, "set_work_mode_self_consumption", response=True)
@@ -518,6 +550,30 @@ def _sign_in_entry(expires_at: float) -> MockConfigEntry:
 class TestSignInEntries:
     """Account sign-in entries use (and refresh) Home Assistant's OAuth token."""
 
+    @pytest.mark.covers("FC-AUTH-05", "FC-LIFE-02")
+    @pytest.mark.parametrize(
+        ("error", "state"),
+        [
+            (ValueError("implementation gone"), ConfigEntryState.SETUP_ERROR),
+            (ConfigEntryAuthFailed("unknown implementation"), ConfigEntryState.SETUP_ERROR),
+            (ConfigEntryNotReady("provider down"), ConfigEntryState.SETUP_RETRY),
+        ],
+        ids=["value_error", "auth_failed", "not_ready"],
+    )
+    async def test_an_unavailable_sign_in_implementation(
+        self, hass: HomeAssistant, error: Exception, state: ConfigEntryState
+    ) -> None:
+        """Gone means sign in again; temporarily unavailable means retry."""
+        entry = _sign_in_entry(expires_at=9_999_999_999)
+        with patch(
+            "custom_components.eleven_energy_plus.config_entry_oauth2_flow"
+            ".async_get_config_entry_implementation",
+            side_effect=error,
+        ):
+            await setup_entry(hass, entry)
+        assert entry.state is state
+
+    @pytest.mark.covers("FC-AUTH-02")
     async def test_setup_uses_access_token(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -529,6 +585,7 @@ class TestSignInEntries:
         site_call = aioclient_mock.mock_calls[0]
         assert site_call[3]["Authorization"] == "Bearer access-1"
 
+    @pytest.mark.covers("FC-AUTH-03", "FC-AUTH-04", "FC-TIME-05")
     async def test_expired_token_is_refreshed_without_reload(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -560,6 +617,7 @@ class TestSignInEntries:
         assert entry.runtime_data is controller
         assert entry.state is ConfigEntryState.LOADED
 
+    @pytest.mark.covers("FC-AUTH-07")
     async def test_refused_refresh_starts_reauth(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -579,6 +637,7 @@ class TestSignInEntries:
 class TestRegistryMigration:
     """Pre-2.0 positional entities move to the curated ones at setup."""
 
+    @pytest.mark.covers("FC-MIG-01", "FC-MIG-02")
     async def test_positional_entities_are_migrated_and_phantoms_removed(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:
@@ -628,6 +687,7 @@ class TestRegistryMigration:
         await hass.async_block_till_done()
         assert ent_reg.async_get(old_mppt_1).unique_id == "abc_mppt_1_power"
 
+    @pytest.mark.covers("FC-MIG-02")
     async def test_nothing_removed_without_known_hardware(
         self, hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
     ) -> None:

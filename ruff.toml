@@ -1,0 +1,25 @@
+# Ruff configuration (lint gate in .github/workflows/lint.yaml).
+target-version = "py314"
+line-length = 88
+
+[lint]
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "B",             # bugbear
+    "UP",            # pyupgrade
+    "SIM",           # simplify
+    "RUF",           # ruff-specific
+    "PL",            # pylint
+    "DTZ",           # naive datetimes
+    "ASYNC",         # async pitfalls
+    "BLE",           # blind except
+    "PIE", "RET", "ERA", "C4", "PERF",
+]
+ignore = [
+    "E501",     # line length is handled by review, not the linter
+    "PLR2004",  # magic values: the integration is full of documented limits
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR0917",  # complexity budgets
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["PLC0415", "BLE001"]

@@ -1,4 +1,4 @@
-"""Pure-Python helper tests (no HomeAssistant runtime needed)."""
+"""Pure-Python helper tests for the controller, inverter and action schemas."""
 
 from __future__ import annotations
 
@@ -7,26 +7,29 @@ import math
 import pytest
 import voluptuous as vol
 
+from homeassistant.const import EntityCategory
+
 from custom_components.eleven_energy_plus.const import (
     MAX_POWER_KW,
     MAX_TARGET_MINUTES,
 )
 from custom_components.eleven_energy_plus.controller import (
     _as_list,
-    _clamp_minutes,
-    _clamp_percent,
-    _clamp_power_kw,
-    _coerce_bool,
+    _valid_minutes,
+    _valid_percent,
+    _valid_power_kw,
     api_device_label,
+    listed_inverter_ids,
     model_block,
 )
 from custom_components.eleven_energy_plus.hybrid_inverter import (
+    _MAX_LIST_EXPANSION,
+    IgnoredItem,
     _humanise_path,
     _infer_meta,
-    _item_index,
-    coerce_finite_number,
     indexed_items,
-    parse_bool,
+    item_index,
+    scan_indexed_items,
 )
 from custom_components.eleven_energy_plus.services import (
     BOOLEAN_VALUE,
@@ -35,104 +38,50 @@ from custom_components.eleven_energy_plus.services import (
     POWER_KW_VALUE,
 )
 
+_UNUSABLE = [None, "nan-string", object(), [1, 2], "nan", "inf", "-inf", math.nan, math.inf, True, False]
 
-class TestClampPercent:
-    """``_clamp_percent`` is the defensive gate for every percentage field."""
 
-    @pytest.mark.parametrize(
-        ("value", "expected"),
-        [
-            (0, 0.0),
-            (50, 50.0),
-            (100, 100.0),
-            (-5, 0.0),
-            (150, 100.0),
-            ("75", 75.0),
-            (75.5, 75.5),
-        ],
-    )
-    def test_clamps_into_range(self, value, expected) -> None:
-        assert _clamp_percent(value) == expected
+class TestValidPercent:
+    """``_valid_percent`` is the controller's gate for every percentage field."""
 
     @pytest.mark.parametrize(
-        "value",
-        [None, "nan-string", object(), [1, 2], "nan", "inf", "-inf", math.nan, math.inf, True, False],
+        ("value", "expected"), [(0, 0.0), (50, 50.0), (100, 100.0), ("75", 75.0), (75.5, 75.5)]
     )
-    def test_returns_none_for_unusable(self, value) -> None:
-        """NaN must never clamp to 100 % and a boolean is not a percentage."""
-        assert _clamp_percent(value) is None
+    def test_accepts_in_range(self, value, expected) -> None:
+        assert _valid_percent(value) == expected
+
+    @pytest.mark.parametrize("value", [-5, -0.01, 100.01, 150, *_UNUSABLE])
+    def test_refuses_rather_than_clamps(self, value) -> None:
+        """Out of range is refused, never clamped; NaN never becomes 100 %."""
+        assert _valid_percent(value) is None
 
 
-class TestClampPowerKw:
-    """``_clamp_power_kw`` guards against unrealistic kW values."""
+class TestValidPowerKw:
+    """``_valid_power_kw`` refuses unrealistic kW values."""
 
-    @pytest.mark.parametrize(
-        ("value", "expected"),
-        [
-            (0, 0.0),
-            (3.5, 3.5),
-            (MAX_POWER_KW, MAX_POWER_KW),
-            (100, MAX_POWER_KW),
-            (-1, 0.0),
-        ],
-    )
-    def test_clamps_into_range(self, value, expected) -> None:
-        assert _clamp_power_kw(value) == expected
+    @pytest.mark.parametrize("value", [0, 3.5, MAX_POWER_KW, "20"])
+    def test_accepts_in_range(self, value) -> None:
+        assert _valid_power_kw(value) == float(value)
 
-    @pytest.mark.parametrize("value", ["abc", None, "nan", "inf", math.nan, True])
-    def test_returns_none_for_unusable(self, value) -> None:
+    @pytest.mark.parametrize("value", [100, MAX_POWER_KW + 0.1, -1, "abc", *_UNUSABLE])
+    def test_refuses_rather_than_clamps(self, value) -> None:
         """Regression: "nan" kW used to become full power (50 kW)."""
-        assert _clamp_power_kw(value) is None
+        assert _valid_power_kw(value) is None
 
 
-class TestClampMinutes:
-    """``_clamp_minutes`` returns whole minutes within the API range, or None."""
-
-    @pytest.mark.parametrize(
-        ("value", "expected"),
-        [
-            (1, 1),
-            (120, 120),
-            (0, 1),
-            (-5, 1),
-            ("60", 60),
-            (60.7, 60),
-            (99999, MAX_TARGET_MINUTES),
-        ],
-    )
-    def test_clamps_into_range(self, value, expected) -> None:
-        assert _clamp_minutes(value) == expected
-
-    @pytest.mark.parametrize("value", [None, "two", "inf", math.inf, math.nan, True])
-    def test_returns_none_for_unusable(self, value) -> None:
-        """Regression: "inf" used to raise OverflowError out of set_work_mode."""
-        assert _clamp_minutes(value) is None
-
-
-class TestCoerceBool:
-    """``_coerce_bool`` handles the various truthy strings YAML emits."""
+class TestValidMinutes:
+    """``_valid_minutes`` returns whole minutes within the API range, or None."""
 
     @pytest.mark.parametrize(
-        ("value", "expected"),
-        [
-            (True, True),
-            (False, False),
-            ("true", True),
-            ("True", True),
-            ("YES", True),
-            ("on", True),
-            ("1", True),
-            ("false", False),
-            ("no", False),
-            ("off", False),
-            ("0", False),
-            ("anything-else", False),
-            (1, True),
-            (0, False),
-        ],
+        ("value", "expected"), [(1, 1), (120, 120), ("60", 60), (60.0, 60), (MAX_TARGET_MINUTES, MAX_TARGET_MINUTES)]
     )
-    def test_handles_truthy_strings(self, value, expected) -> None:
-        assert _coerce_bool(value) is expected
+    def test_accepts_whole_minutes_in_range(self, value, expected) -> None:
+        assert _valid_minutes(value) == expected
+
+    @pytest.mark.parametrize("value", [0, -5, 60.7, "60.5", 99999, "two", *_UNUSABLE])
+    def test_refuses_fractions_and_out_of_range(self, value) -> None:
+        """Regression: 60.7 used to be truncated to 60 and "inf" to raise."""
+        assert _valid_minutes(value) is None
 
 
 class TestAsList:
@@ -147,6 +96,7 @@ class TestAsList:
             (["a", "b"], ["a", "b"]),
             (["a", "", None], ["a"]),
             (("x",), ["x"]),
+            (7, ["7"]),
         ],
     )
     def test_normalises(self, value, expected) -> None:
@@ -188,55 +138,30 @@ class TestServiceValidators:
             MINUTES_VALUE(value)
 
     @pytest.mark.parametrize(
-        ("value", "expected"), [(True, True), ("on", True), ("false", False), (0, False)]
+        ("value", "expected"),
+        [(True, True), ("on", True), ("false", False), (0, False), (1, True), ("YES", True)],
     )
     def test_boolean_accepts(self, value, expected) -> None:
         assert BOOLEAN_VALUE(value) is expected
 
-    @pytest.mark.parametrize("value", ["maybe", "2", None])
+    @pytest.mark.parametrize("value", ["maybe", "2", None, 2, 0.5, -1, [], "", "yesno"])
     def test_boolean_rejects(self, value) -> None:
+        """Regression: ``cv.boolean`` accepted any number (2 -> True)."""
         with pytest.raises(vol.Invalid):
             BOOLEAN_VALUE(value)
 
-
-class TestValueParsing:
-    """Entity-side parsing of API values."""
-
     @pytest.mark.parametrize(
-        ("value", "expected"),
-        [(1, 1), (1.5, 1.5), ("2.25", 2.25), (" 3 ", 3.0), (0, 0)],
-    )
-    def test_coerce_finite_number_accepts(self, value, expected) -> None:
-        assert coerce_finite_number(value) == expected
-
-    @pytest.mark.parametrize(
-        "value", [True, False, "N/A", "", math.nan, math.inf, "nan", None, {}, []]
-    )
-    def test_coerce_finite_number_rejects(self, value) -> None:
-        assert coerce_finite_number(value) is None
-
-    @pytest.mark.parametrize(
-        ("value", "expected"),
+        ("validator", "value", "message"),
         [
-            (True, True),
-            (False, False),
-            ("true", True),
-            ("False", False),
-            (" ON ", True),
-            ("no", False),
-            (1, True),
-            (0, False),
-            (1.0, True),
-            (2, None),
-            ("maybe", None),
-            ("", None),
-            (None, None),
-            ([], None),
+            (PERCENT_VALUE, "nan", "expected a finite number, got 'nan'"),
+            (MINUTES_VALUE, 60.5, "expected a whole number of minutes, got 60.5"),
+            (BOOLEAN_VALUE, 2, "expected true or false, got 2"),
         ],
     )
-    def test_parse_bool(self, value, expected) -> None:
-        """Regression: ``bool("false")`` used to turn the Online sensor on."""
-        assert parse_bool(value) is expected
+    def test_errors_name_the_refused_value(self, validator, value, message) -> None:
+        with pytest.raises(vol.Invalid) as err:
+            validator(value)
+        assert message in str(err.value)
 
 
 class TestLabelSelection:
@@ -283,16 +208,79 @@ class TestIndexedItems:
             (1, 1),
         ]
 
-    def test_falls_back_to_position(self) -> None:
-        assert _item_index({}, 0) == 1
-        assert _item_index({"index": True}, 4) == 5
-        assert _item_index({"index": "7"}, 1) == 2
-        assert _item_index({"index": 0}, 3) == 0
+    @pytest.mark.parametrize(
+        ("item", "expected"),
+        [
+            ({"index": 0}, 0),
+            ({"index": 3}, 3),
+            ({}, None),
+            ({"index": True}, None),
+            ({"index": "7"}, None),
+            ({"index": 1.0}, None),
+            ({"index": -1}, None),
+            ({"index": None}, None),
+        ],
+    )
+    def test_item_index_never_falls_back_to_position(self, item, expected) -> None:
+        """A positional fallback would shift readings between trackers."""
+        assert item_index(item) == expected
 
     def test_tolerates_shapes(self) -> None:
         assert list(indexed_items(None, "pv.mppts")) == []
         assert list(indexed_items({"pv": []}, "pv.mppts")) == []
-        assert list(indexed_items({"pv": {"mppts": ["x", 1]}}, "pv.mppts")) == []
+        assert scan_indexed_items({"pv": {"mppts": "x"}}, "pv.mppts") == ([], [])
+
+    def test_reports_every_ignored_item(self) -> None:
+        payload = {
+            "pv": {
+                "mppts": [
+                    {"index": 1},
+                    "x",
+                    {"power": 1},
+                    {"index": 1, "power": 2},
+                    {"index": 2},
+                ]
+            }
+        }
+        usable, ignored = scan_indexed_items(payload, "pv.mppts")
+        assert [(position, index) for position, index, _ in usable] == [(0, 1), (4, 2)]
+        assert [item.key for item in ignored] == ["not_object:str", "no_index:None", "duplicate:1"]
+        assert ignored[0].reason == "item 1 is a str, not an object"
+        assert ignored[1].reason == "item 2 has no usable index (None)"
+        assert ignored[2].reason == "duplicate index 1; only the first such item is used"
+        _usable, ignored = scan_indexed_items({"pv": {"mppts": [{"index": "x"}]}}, "pv.mppts")
+        assert ignored == [IgnoredItem("no_index:'x'", "item 0 has no usable index ('x')")]
+
+    def test_reports_truncation(self) -> None:
+        payload = {"pv": {"mppts": [{"index": i} for i in range(_MAX_LIST_EXPANSION + 3)]}}
+        usable, ignored = scan_indexed_items(payload, "pv.mppts")
+        assert len(usable) == _MAX_LIST_EXPANSION
+        assert ignored == [
+            IgnoredItem("truncated", f"more than {_MAX_LIST_EXPANSION} items; the rest are ignored")
+        ]
+
+
+class TestListedInverters:
+    """``listed_inverter_ids`` picks the hybrid inverters out of a site listing."""
+
+    def test_filters_and_deduplicates(self) -> None:
+        payload = {
+            "devices": [
+                {"deviceId": "a", "type": "hybridinverter"},
+                {"deviceId": "t", "type": "thermostat"},
+                {"deviceId": "a", "type": "hybridinverter"},
+                {"deviceId": "", "type": "hybridinverter"},
+                {"deviceId": 7, "type": "hybridinverter"},
+                {"type": "hybridinverter"},
+                "not a device",
+                {"deviceId": "b", "type": "hybridinverter"},
+            ]
+        }
+        assert listed_inverter_ids(payload) == ["a", "b"]
+
+    def test_empty_listing(self) -> None:
+        assert listed_inverter_ids({"devices": []}) == []
+        assert listed_inverter_ids({}) == []
 
 
 class TestHumanisePath:
@@ -309,6 +297,9 @@ class TestHumanisePath:
             ("pvStrings.0.power", "PV Strings 0 Power"),
             ("ev.soc", "EV SOC"),
             ("simple", "Simple"),
+            ("pv.--", "PV --"),
+            ("readingABC", "Reading ABC"),
+            ("valueABCD", "Value Abcd"),
         ],
     )
     def test_humanises(self, path, expected) -> None:
@@ -420,6 +411,124 @@ class TestInferMeta:
         meta = _infer_meta("status", "ok")
         assert meta is not None
         assert meta["icon"] == "mdi:information-outline"
+
+    @pytest.mark.covers("FC-ENT-06")
+    @pytest.mark.parametrize(
+        ("path", "value", "unit", "device_class", "state_class", "icon", "decimals"),
+        [
+            ("pv.energyToday", 1.0, "kWh", "energy", "total_increasing", "mdi:lightning-bolt", 2),
+            ("pv.totalEnergy", 1.0, "kWh", "energy", "total_increasing", "mdi:lightning-bolt", 2),
+            ("pv.energyLifetime", 1.0, "kWh", "energy", "total_increasing", "mdi:lightning-bolt", 2),
+            ("inverter.reactivePower", 1, "var", "reactive_power", "measurement", "mdi:sine-wave", 0),
+            ("inverter.qReactive", 1, "var", "reactive_power", "measurement", "mdi:sine-wave", 0),
+            ("inverter.apparentPower", 1, "VA", "apparent_power", "measurement", "mdi:flash-outline", 0),
+            ("inverter.sApparent", 1, "VA", "apparent_power", "measurement", "mdi:flash-outline", 0),
+            ("foo.somePower", 1.0, "kW", "power", "measurement", "mdi:flash", 2),
+            ("battery.rate", 1.0, "kW", "power", "measurement", "mdi:battery-arrow-up", 2),
+            ("battery.chargeRate", 1.0, "kW", "power", "measurement", "mdi:battery-arrow-up", 2),
+            ("battery.dischargeRate", 1.0, "kW", "power", "measurement", "mdi:battery-arrow-up", 2),
+            ("battery.maxChargeRate", 1.0, "kW", "power", "measurement", "mdi:battery-arrow-up", 2),
+            ("battery.maxDischargeRate", 1.0, "kW", "power", "measurement", "mdi:battery-arrow-up", 2),
+            ("ac.voltage", 230, "V", "voltage", "measurement", "mdi:flash", 2),
+            ("dc.current", 1, "A", "current", "measurement", "mdi:current-ac", 2),
+            ("grid.frequency", 50, "Hz", "frequency", "measurement", "mdi:sine-wave", 2),
+            ("inverter.temperature", 30, "\u00b0C", "temperature", "measurement", "mdi:thermometer", 1),
+            ("inverter.heatsinkTemp", 30, "\u00b0C", "temperature", "measurement", "mdi:thermometer", 1),
+            ("battery.stateOfHealth", 95, "%", None, "measurement", "mdi:heart-pulse", 0),
+            ("battery.soh", 95, "%", None, "measurement", "mdi:heart-pulse", 0),
+            ("battery.stateOfCharge", 80, "%", "battery", "measurement", "mdi:percent", 0),
+            ("ev.soc", 80, "%", "battery", "measurement", "mdi:percent", 0),
+            ("battery.targetPc", 80, "%", "battery", "measurement", "mdi:percent", 0),
+            ("inverter.loadPc", 40, "%", None, "measurement", "mdi:percent", 0),
+            ("inverter.chargePercentage", 40, "%", None, "measurement", "mdi:percent", 0),
+            ("foo.unknown", 42, None, None, "measurement", "mdi:numeric", -1),
+            ("pv.peakToday", 5, None, None, "measurement", "mdi:numeric", -1),
+            ("inverter.totalRuntime", 5, None, None, "measurement", "mdi:numeric", -1),
+            ("ev.stateOfCharge", 80, "%", "battery", "measurement", "mdi:percent", 0),
+        ],
+    )
+    def test_every_numeric_heuristic(
+        self,
+        path: str,
+        value: float,
+        unit: str | None,
+        device_class: str | None,
+        state_class: str,
+        icon: str,
+        decimals: int,
+    ) -> None:
+        meta = _infer_meta(path, value)
+        assert meta is not None
+        assert meta["kind"] == "sensor"
+        assert meta["unit"] == unit
+        assert (meta["device_class"] and meta["device_class"].value) == device_class
+        assert meta["state_class"].value == state_class
+        assert meta["icon"] == icon
+        assert meta["decimals"] == decimals
+        assert meta["category"] is EntityCategory.DIAGNOSTIC
+        assert meta["entity_type"] == path.replace(".", "_")
+
+    @pytest.mark.covers("FC-ENT-06")
+    @pytest.mark.parametrize(
+        ("path", "device_class"),
+        [
+            ("anyFault", "problem"),
+            ("inverter.error", "problem"),
+            ("gridAlarm", "problem"),
+            ("inverterOnline", "connectivity"),
+            ("meter.connected", "connectivity"),
+            ("pumpRunning", "running"),
+            ("exportActive", "running"),
+            ("flag", None),
+        ],
+    )
+    def test_every_boolean_heuristic(self, path: str, device_class: str | None) -> None:
+        meta = _infer_meta(path, True)
+        assert meta is not None
+        assert meta["kind"] == "binary_sensor"
+        assert (meta["device_class"] and meta["device_class"].value) == device_class
+        assert meta["icon"] == "mdi:checkbox-marked-circle-outline"
+        assert meta["category"] is EntityCategory.DIAGNOSTIC
+
+    @pytest.mark.covers("FC-ENT-06")
+    @pytest.mark.parametrize(
+        ("path", "icon"),
+        [
+            ("hardwareVersion", "mdi:chip"),
+            ("battery.model", "mdi:chip"),
+            ("firmwareBuild", "mdi:chip"),
+            ("serialNo", "mdi:chip"),
+            ("statusText", "mdi:information-outline"),
+        ],
+    )
+    def test_every_text_heuristic(self, path: str, icon: str) -> None:
+        meta = _infer_meta(path, "x")
+        assert meta is not None
+        assert meta["kind"] == "sensor"
+        assert meta["unit"] is None
+        assert meta["device_class"] is None
+        assert meta["state_class"] is None
+        assert meta["icon"] == icon
+
+    def test_only_the_last_segment_decides_the_kind(self) -> None:
+        """A parent block's name must not classify the field inside it."""
+        meta = _infer_meta("pv.voltage.count", 3)
+        assert meta is not None
+        assert meta["unit"] is None
+        assert meta["device_class"] is None
+
+    def test_nested_paths_keep_their_identity_and_name(self) -> None:
+        meta = _infer_meta("battery.cells.minVoltage", 3.2)
+        assert meta is not None
+        assert meta["entity_type"] == "battery_cells_minVoltage"
+        assert meta["name"] == "Battery Cells Min Voltage"
+        assert meta["category"] is EntityCategory.DIAGNOSTIC
+
+    def test_percentage_outside_the_battery_has_no_battery_class(self) -> None:
+        meta = _infer_meta("inverter.loadPc", 40)
+        assert meta is not None
+        assert meta["unit"] == "%"
+        assert meta["device_class"] is None
 
     def test_unrecognised_number_falls_back_to_numeric_icon(self) -> None:
         meta = _infer_meta("foo.unknown", 42)

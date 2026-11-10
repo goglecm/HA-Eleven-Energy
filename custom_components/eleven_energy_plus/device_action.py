@@ -57,12 +57,11 @@ _ALL_FIELDS: tuple[str, ...] = tuple(
     sorted({field for fields in SERVICE_FIELDS.values() for field in fields})
 )
 
-ACTION_SCHEMA = cv.DEVICE_ACTION_BASE_SCHEMA.extend(
-    {
-        vol.Required(CONF_TYPE): vol.In(ACTION_TYPES),
-        **{vol.Optional(field): FIELD_VALIDATORS[field] for field in _ALL_FIELDS},
-    }
-)
+_ACTION_FIELDS: dict[Any, Any] = {
+    vol.Required(CONF_TYPE): vol.In(ACTION_TYPES),
+    **{vol.Optional(field): FIELD_VALIDATORS[field] for field in _ALL_FIELDS},
+}
+ACTION_SCHEMA = cv.DEVICE_ACTION_BASE_SCHEMA.extend(_ACTION_FIELDS)
 
 
 def _percent_selector() -> selector.NumberSelector:

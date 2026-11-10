@@ -14,14 +14,19 @@ Failure semantics (stable, documented in the README):
   returned, success or not, so the automation can branch on ``success``.
 * The caller did not ask for a response: a failure raises, so the
   automation step fails visibly instead of carrying on as if the inverter
-  had changed mode. Target / input problems raise
-  :class:`ServiceValidationError`; API and credential problems raise
-  :class:`HomeAssistantError`.
+  had changed mode. Each ``error_kind`` maps to exactly one exception and
+  message (:data:`_RAISED`): invalid input or target raises
+  :class:`ServiceValidationError`; a rejected credential, an API failure, a
+  superseded or aborted command, an internal error and "not loaded" each
+  raise :class:`HomeAssistantError` with their own translation key.
+
+Schemas are built with ``voluptuous``, which Home Assistant 2026.9+ aliases
+to ``probatio`` at runtime. The two are different types to a type checker,
+so the schema objects handed to Home Assistant are annotated ``Any``.
 """
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
@@ -42,7 +47,9 @@ from .const import (
     MAX_TARGET_MINUTES,
     MIN_POWER_KW,
     MIN_TARGET_MINUTES,
+    ErrorKind,
 )
+from .parsing import finite_float, parse_bool, parse_whole_number
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -50,23 +57,30 @@ if TYPE_CHECKING:
 
 def _finite_number(value: Any) -> float:
     """Validate a finite, non-boolean number (numeric strings accepted)."""
-    if isinstance(value, bool):
-        raise vol.Invalid(f"expected a number, got {value!r}")
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError) as err:
-        raise vol.Invalid(f"expected a number, got {value!r}") from err
-    if not math.isfinite(number):
+    number = finite_float(value)
+    if number is None:
         raise vol.Invalid(f"expected a finite number, got {value!r}")
     return number
 
 
 def _whole_minutes(value: Any) -> int:
     """Validate a whole number of minutes (``60`` and ``"60.0"`` both pass)."""
-    number = _finite_number(value)
-    if not number.is_integer():
+    minutes = parse_whole_number(value)
+    if minutes is None:
         raise vol.Invalid(f"expected a whole number of minutes, got {value!r}")
-    return int(number)
+    return minutes
+
+
+def _strict_boolean(value: Any) -> bool:
+    """Validate an unambiguous boolean.
+
+    Home Assistant's ``cv.boolean`` turns any number into a boolean (``2``
+    becomes True). Only booleans, 0/1 and the usual words are accepted.
+    """
+    parsed = parse_bool(value)
+    if parsed is None:
+        raise vol.Invalid(f"expected true or false, got {value!r}")
+    return parsed
 
 
 PERCENT_VALUE = vol.All(_finite_number, vol.Range(min=0, max=100))
@@ -76,7 +90,7 @@ POWER_KW_VALUE = vol.All(
 MINUTES_VALUE = vol.All(
     _whole_minutes, vol.Range(min=MIN_TARGET_MINUTES, max=MAX_TARGET_MINUTES)
 )
-BOOLEAN_VALUE = cv.boolean
+BOOLEAN_VALUE = _strict_boolean
 
 # Validators per field, shared with ``device_action.py`` so a device action
 # accepts exactly what calling the action directly accepts.
@@ -134,8 +148,8 @@ _TARGET_FIELDS: dict[Any, Any] = {
 }
 
 
-def _build_schema(service: str) -> vol.Schema:
-    """Build the validation schema for one action."""
+def build_schema(service: str) -> Any:
+    """Build the validation schema for one action (at registration)."""
     schema: dict[Any, Any] = dict(_TARGET_FIELDS)
     for field, required in SERVICE_FIELDS[service].items():
         if service == "set_work_mode_self_consumption":
@@ -150,8 +164,16 @@ def _build_schema(service: str) -> vol.Schema:
     return vol.Schema(schema)
 
 
-SERVICE_SCHEMAS: dict[str, vol.Schema] = {
-    service: _build_schema(service) for service in SERVICE_NAMES
+# What a failure raises when the caller did not ask for a response:
+# exception class and translation key, one per error kind.
+_RAISED: dict[ErrorKind, tuple[type[HomeAssistantError], str]] = {
+    ErrorKind.INVALID_REQUEST: (ServiceValidationError, "invalid_request"),
+    ErrorKind.CREDENTIAL_REJECTED: (HomeAssistantError, "credential_rejected"),
+    ErrorKind.API_ERROR: (HomeAssistantError, "work_mode_failed"),
+    ErrorKind.SUPERSEDED: (HomeAssistantError, "work_mode_superseded"),
+    ErrorKind.ABORTED: (HomeAssistantError, "work_mode_aborted"),
+    ErrorKind.INTERNAL_ERROR: (HomeAssistantError, "internal_error"),
+    ErrorKind.NOT_LOADED: (HomeAssistantError, "not_loaded"),
 }
 
 
@@ -164,6 +186,7 @@ def _not_loaded_result() -> dict[str, Any]:
         "params": {},
         "attempts": 0,
         "error": "integration not loaded",
+        "error_kind": ErrorKind.NOT_LOADED,
     }
 
 
@@ -176,40 +199,28 @@ def async_setup_services(hass: HomeAssistant) -> None:
         if _PERCENT_ALIAS in data:
             data["percent_to_battery"] = data.pop(_PERCENT_ALIAS)
 
-        controller: Controller | None = None
-        for entry in hass.config_entries.async_loaded_entries(DOMAIN):
-            controller = getattr(entry, "runtime_data", None)
-            if controller is not None:
-                break
-
-        if controller is None:
-            result = _not_loaded_result()
-        else:
+        # Only one entry is allowed (single_config_entry); a loaded entry
+        # always holds its controller.
+        loaded = hass.config_entries.async_loaded_entries(DOMAIN)
+        if loaded:
+            controller: Controller = loaded[0].runtime_data
             result = await controller.set_work_mode(call.service, data)
+        else:
+            result = _not_loaded_result()
 
         if result["success"]:
             return result if call.return_response else None
         if call.return_response:
             return result
 
-        placeholders = {"service": call.service, "error": str(result["error"])}
-        if controller is None:
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="not_loaded",
-                translation_placeholders=placeholders,
-            )
-        if result["attempts"] == 0 and not controller.auth_failed:
-            # Nothing was sent: the request itself (target, fields) is wrong.
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="invalid_request",
-                translation_placeholders=placeholders,
-            )
-        raise HomeAssistantError(
+        exception, translation_key = _RAISED[ErrorKind(result["error_kind"])]
+        raise exception(
             translation_domain=DOMAIN,
-            translation_key="work_mode_failed",
-            translation_placeholders=placeholders,
+            translation_key=translation_key,
+            translation_placeholders={
+                "service": call.service,
+                "error": str(result["error"]),
+            },
         )
 
     for service in SERVICE_NAMES:
@@ -219,6 +230,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
             DOMAIN,
             service,
             _async_handle_work_mode,
-            schema=SERVICE_SCHEMAS[service],
+            schema=build_schema(service),
             supports_response=SupportsResponse.OPTIONAL,
         )

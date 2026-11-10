@@ -39,7 +39,6 @@ async def async_setup_entry(
     entities: list[Any] = []
     for inverter in controller.devices.values():
         entities.extend(inverter.sensor_entities.values())
-    if entities:
-        async_add_entities(entities)
+    async_add_entities(entities)
 
     controller.complete_platform_setup("sensor", async_add_entities)

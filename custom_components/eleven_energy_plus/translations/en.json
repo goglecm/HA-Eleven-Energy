@@ -1,7 +1,6 @@
 {
     "config": {
         "abort": {
-            "already_configured": "Eleven Energy Plus is already configured.",
             "single_instance_allowed": "Only one Eleven Energy Plus site can be configured. Use the existing entry's Reconfigure or Configure options instead.",
             "reauth_successful": "Eleven Energy Plus is reconnected.",
             "reconfigure_successful": "Eleven Energy Plus now uses the new connection.",
@@ -14,7 +13,12 @@
             "oauth_timeout": "Timed out waiting for Eleven Energy to issue a sign-in token.",
             "oauth_unauthorized": "Eleven Energy refused the sign-in.",
             "oauth_implementation_unavailable": "The Eleven Energy sign-in is temporarily unavailable. Try again later, or use an API token.",
-            "user_rejected_authorize": "The Eleven Energy sign-in was declined: {error}"
+            "user_rejected_authorize": "The Eleven Energy sign-in was declined: {error}",
+            "invalid_auth": "Eleven Energy did not accept the sign-in.",
+            "cannot_connect": "Could not reach the Eleven Energy API to check the sign-in. Try again later.",
+            "no_inverters": "The Eleven Energy site for this sign-in has no hybrid inverter, so there is nothing to set up.",
+            "different_site": "This sign-in is for a different Eleven Energy site than the one already set up. Sign in to the original site, or remove the integration and add it again for the new one.",
+            "unknown": "Unexpected error checking the sign-in."
         },
         "create_entry": {
             "default": "Connected to Eleven Energy."
@@ -22,7 +26,9 @@
         "error": {
             "cannot_connect": "Could not reach the Eleven Energy API. Check the connection and try again.",
             "invalid_auth": "Eleven Energy did not accept this API token.",
-            "unknown": "Unexpected error"
+            "unknown": "Unexpected error",
+            "no_inverters": "This token's Eleven Energy site has no hybrid inverter, so there is nothing to set up.",
+            "different_site": "This token is for a different Eleven Energy site than the one already set up. Use a token for the original site, or remove the integration and add it again for the new one."
         },
         "step": {
             "user": {
@@ -69,9 +75,8 @@
     },
     "options": {
         "error": {
-            "cannot_connect": "Could not reach the Eleven Energy API. Check the connection and try again.",
-            "invalid_auth": "Eleven Energy did not accept this API token.",
-            "unknown": "Unexpected error"
+            "poll_interval_invalid": "Enter a whole number of seconds between 5 and 300.",
+            "label_invalid": "Use at most 64 printable characters (no line breaks or control characters), or leave blank."
         },
         "step": {
             "init": {
@@ -198,6 +203,9 @@
         "binary_sensor": {
             "system_online": {
                 "name": "Online"
+            },
+            "api_connection": {
+                "name": "API Connection"
             }
         },
         "number": {
@@ -215,6 +223,21 @@
         },
         "work_mode_failed": {
             "message": "Eleven Energy Plus could not apply {service}: {error}."
+        },
+        "credential_rejected": {
+            "message": "Eleven Energy Plus could not apply {service}: Eleven Energy rejected the credential. Reauthenticate the integration, then try again. ({error})"
+        },
+        "work_mode_superseded": {
+            "message": "Eleven Energy Plus did not apply {service}: a newer work-mode request for the same inverter replaced it."
+        },
+        "work_mode_aborted": {
+            "message": "Eleven Energy Plus did not apply {service}: the integration was stopping."
+        },
+        "internal_error": {
+            "message": "Eleven Energy Plus hit an internal error running {service}: {error}. Nothing may have been sent; check the log and report it."
+        },
+        "poll_interval_invalid": {
+            "message": "{value} is not a whole number of seconds between {min} and {max}."
         }
     },
     "device_automation": {
@@ -363,6 +386,32 @@
                     "description": "Which inverter to act on. Optional on a site with one inverter; on a site with more, a call without it is refused rather than guessed."
                 }
             }
+        }
+    },
+    "issues": {
+        "cloud_unreachable": {
+            "title": "Eleven Energy cloud unreachable",
+            "description": "Eleven Energy Plus has not been able to reach the Eleven Energy API for {minutes} minutes or more. Inverter entities are unavailable until it can. Check this Home Assistant's internet connection, and the Eleven Energy service status. This clears itself once a poll succeeds."
+        },
+        "inverter_offline": {
+            "title": "{name} is offline",
+            "description": "Eleven Energy reports that {name} has been offline for {minutes} minutes or more, so its live readings are unavailable. Check the inverter's power and network connection. This clears itself once it is back online."
+        },
+        "inverter_missing": {
+            "title": "{name} is no longer on the site",
+            "description": "{name} is no longer listed on the Eleven Energy site, so its entities are unavailable. If it was removed or replaced, delete the device from its device page. If it comes back, this clears itself."
+        },
+        "work_mode_failed": {
+            "title": "Work mode change failed on {name}",
+            "description": "The last work-mode command for {name} failed: {error}. The inverter may still be in its previous mode. This clears itself after the next successful command."
+        },
+        "optimiser_off": {
+            "title": "Eleven Energy optimiser off on {name}",
+            "description": "A work mode was set on {name} from Home Assistant more than {hours} hours ago and Reset Work Mode has not been sent since, so the Eleven Energy optimiser is still switched off. Send the Reset Work Mode action when your automation has finished. This clears itself once it is sent."
+        },
+        "credential_rejected": {
+            "title": "Eleven Energy Plus needs you to reauthenticate",
+            "description": "Eleven Energy no longer accepts this integration's credential, so all inverter entities are unavailable. Open Settings > Devices & services and reauthenticate Eleven Energy Plus. An API token is re-checked every 10 minutes in case the rejection was temporary."
         }
     }
 }

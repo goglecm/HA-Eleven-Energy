@@ -13,13 +13,14 @@ value stays in sync when the user edits the cadence in the OptionsFlow.
 
 Unlike the telemetry entities it stays available while the API is
 unreachable: it reflects local configuration, and lengthening the interval
-is a reasonable thing to want to do during an outage.
+is a reasonable thing to want to do during an outage. It goes unavailable
+only once the integration has shut down.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.number import (
     NumberDeviceClass,
@@ -28,15 +29,18 @@ from homeassistant.components.number import (
 )
 from homeassistant.const import EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity import generate_entity_id
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
     CONF_POLL_INTERVAL,
+    DOMAIN,
     MAX_POLL_INTERVAL_SECONDS,
     MIN_POLL_INTERVAL_SECONDS,
     POLL_INTERVAL_STEP_SECONDS,
 )
+from .parsing import parse_whole_number
 
 if TYPE_CHECKING:
     from . import ElevenEnergyConfigEntry
@@ -51,25 +55,22 @@ async def async_setup_entry(
     entry: ElevenEnergyConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Register one poll-interval Number entity per discovered inverter.
+    """Register one poll-interval Number entity per inverter.
 
-    Unlike the sensor and binary_sensor platforms, the Number platform does
-    not support dynamic discovery: inverters added at runtime (after the
-    initial site poll) will only get a poll-interval entity on the next HA
-    restart. That is an intentional simplification - the cadence is a
-    site-wide setting, so having one Number per inverter is already a
-    convenience rather than a strict requirement.
+    The factory handed to the controller builds the entity for an inverter
+    found later, at runtime, so it gets one without a restart.
     """
     controller = entry.runtime_data
 
-    entities: list[PollIntervalNumber] = [
-        PollIntervalNumber(hass, entry, inverter, controller)
-        for inverter in controller.devices.values()
-    ]
-    if entities:
-        async_add_entities(entities)
+    def _entities_for(inverter: HybridInverter) -> list[Any]:
+        return [PollIntervalNumber(hass, entry, inverter, controller)]
 
-    controller.complete_platform_setup("number", async_add_entities)
+    entities: list[Any] = []
+    for inverter in controller.devices.values():
+        entities.extend(_entities_for(inverter))
+    async_add_entities(entities)
+
+    controller.complete_platform_setup("number", async_add_entities, _entities_for)
 
 
 class PollIntervalNumber(NumberEntity):
@@ -113,23 +114,42 @@ class PollIntervalNumber(NumberEntity):
         )
 
     @property
+    def available(self) -> bool:
+        """Available until the integration shuts down."""
+        return not self._controller.terminated
+
+    @property
     def native_value(self) -> float:
         """Return the current poll interval from the controller."""
         return float(self._controller.poll_interval)
 
     async def async_set_native_value(self, value: float) -> None:
-        """Persist a new poll interval in the config entry options."""
-        new_value = int(value)
-        new_value = max(
-            MIN_POLL_INTERVAL_SECONDS, min(MAX_POLL_INTERVAL_SECONDS, new_value)
-        )
+        """Persist a new poll interval in the config entry options.
 
-        if new_value == self._entry.options.get(CONF_POLL_INTERVAL):
+        Home Assistant checks the range but lets NaN through (every
+        comparison with NaN is false), and does not enforce whole seconds,
+        so the value is checked here and refused rather than converted.
+        """
+        seconds = parse_whole_number(value)
+        if seconds is None or not (
+            MIN_POLL_INTERVAL_SECONDS <= seconds <= MAX_POLL_INTERVAL_SECONDS
+        ):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="poll_interval_invalid",
+                translation_placeholders={
+                    "value": str(value),
+                    "min": str(MIN_POLL_INTERVAL_SECONDS),
+                    "max": str(MAX_POLL_INTERVAL_SECONDS),
+                },
+            )
+
+        if seconds == self._entry.options.get(CONF_POLL_INTERVAL):
             return
 
         self.hass.config_entries.async_update_entry(
             self._entry,
-            options={**self._entry.options, CONF_POLL_INTERVAL: new_value},
+            options={**self._entry.options, CONF_POLL_INTERVAL: seconds},
         )
         # Write our new value straight away so the UI feels responsive; the
         # update listener will also fan out via the controller shortly.
@@ -150,7 +170,7 @@ class PollIntervalNumber(NumberEntity):
         """Opt in to in-place ``entity_id`` changes (Home Assistant 2026.11+).
 
         Nothing this entity sets up is keyed on its own ``entity_id``, so a
-        rename needs no extra work. Older Home Assistant versions never call
-        this method.
+        rename needs no work; the base implementation is a no-op too.
+        Defining the method is what opts in. Older Home Assistant versions
+        never call it.
         """
-        super().async_entity_id_changed(old_entity_id)  # type: ignore[misc]

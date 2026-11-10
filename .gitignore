@@ -25,3 +25,7 @@ coverage.xml
 .idea/
 *.swp
 .DS_Store
+
+# mutmut working copy and hypothesis example database
+mutants/
+.hypothesis/

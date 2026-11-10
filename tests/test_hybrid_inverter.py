@@ -7,8 +7,10 @@ import math
 from typing import Any
 from unittest.mock import MagicMock
 
+from hypothesis import HealthCheck, given, settings, strategies as st
 import pytest
 
+from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 
@@ -69,12 +71,14 @@ def _attach(entity: Any, hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -
 class TestPredefinedEntities:
     """Predefined entities are created up front so platforms can register them."""
 
+    @pytest.mark.covers("FC-ENT-01")
     def test_predefined_sensors_created(self, inverter: HybridInverter) -> None:
         assert "pv.power" in inverter.sensor_entities
         assert "battery.stateOfCharge" in inverter.sensor_entities
         assert "operatingMode.workMode" in inverter.sensor_entities
         assert "firmwareVersion" in inverter.sensor_entities
 
+    @pytest.mark.covers("FC-ENT-01")
     def test_predefined_binary_sensor_created(
         self, inverter: HybridInverter
     ) -> None:
@@ -90,6 +94,7 @@ class TestPredefinedEntities:
         # Manufacturer keeps the hardware vendor's brand.
         assert device_field(info, "manufacturer") == "Eleven Energy"
 
+    @pytest.mark.covers("FC-ENT-09")
     def test_entity_ids_match_platform_domain(self, inverter: HybridInverter) -> None:
         """Entity ids must never be minted in the wrong domain (stops in 2027.5)."""
         for entity in inverter.sensor_entities.values():
@@ -97,10 +102,12 @@ class TestPredefinedEntities:
         for entity in inverter.binary_sensor_entities.values():
             assert entity.entity_id.startswith("binary_sensor.")
 
+    @pytest.mark.covers("FC-VAL-02")
     def test_binary_sensor_starts_unknown(self, inverter: HybridInverter) -> None:
         """Before the first reading, Online must not claim "off" (offline)."""
         assert inverter.binary_sensor_entities["online"].is_on is None
 
+    @pytest.mark.covers("FC-ENT-05")
     def test_no_model_entities_without_model(self, inverter: HybridInverter) -> None:
         assert inverter.mppt_count == 0
         assert not inverter.three_phase
@@ -113,18 +120,21 @@ class TestPredefinedEntities:
 class TestWalkLeafRouting:
     """The walker pushes values into the right pre-existing entities."""
 
+    @pytest.mark.covers("FC-VAL-01")
     def test_known_numeric_path_updates_sensor(
         self, inverter: HybridInverter
     ) -> None:
         inverter.update({"pv": {"power": 1.23}})
         assert inverter.sensor_entities["pv.power"].native_value == 1.23
 
+    @pytest.mark.covers("FC-VAL-07")
     def test_known_string_lowercase_path_lowercased(
         self, inverter: HybridInverter
     ) -> None:
         inverter.update({"status": "OnGrid"})
         assert inverter.sensor_entities["status"].native_value == "ongrid"
 
+    @pytest.mark.covers("FC-ENT-06")
     def test_dynamic_string_keeps_case(self, inverter: HybridInverter) -> None:
         inverter.update({"hardwareVersion": "Rev-B-2"})
         path = "hardwareVersion"
@@ -138,6 +148,7 @@ class TestWalkLeafRouting:
         inverter.update({"online": True})
         assert inverter.binary_sensor_entities["online"].is_on is True
 
+    @pytest.mark.covers("FC-ENT-01")
     def test_firmware_version_is_exposed(self, inverter: HybridInverter) -> None:
         inverter.update({"firmwareVersion": "v1.2.3"})
         assert inverter.sensor_entities["firmwareVersion"].native_value == "v1.2.3"
@@ -155,6 +166,7 @@ class TestValueValidation:
     """Entities only report values Home Assistant can trust."""
 
     @pytest.mark.parametrize("bad", ["N/A", math.nan, math.inf, True, "", {"x": 1}])
+    @pytest.mark.covers("FC-VAL-01")
     def test_numeric_sensor_rejects_unusable_values(
         self, inverter: HybridInverter, bad: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -165,6 +177,7 @@ class TestValueValidation:
         assert sensor.native_value is None
         assert any("unusable value" in r.message for r in caplog.records)
 
+    @pytest.mark.covers("FC-VAL-01")
     def test_numeric_sensor_accepts_numeric_strings(
         self, inverter: HybridInverter
     ) -> None:
@@ -172,6 +185,7 @@ class TestValueValidation:
         sensor.set_native_value("2.5")
         assert sensor.native_value == 2.5
 
+    @pytest.mark.covers("FC-VAL-01")
     def test_invalid_value_warned_once(
         self, inverter: HybridInverter, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -186,6 +200,7 @@ class TestValueValidation:
         ("raw", "expected"),
         [("false", False), ("true", True), (0, False), (1, True), ("maybe", None)],
     )
+    @pytest.mark.covers("FC-VAL-02")
     def test_binary_sensor_parses_strictly(
         self, inverter: HybridInverter, raw: Any, expected: bool | None
     ) -> None:
@@ -284,6 +299,7 @@ class TestLeafIsolation:
 class TestListWalking:
     """Generic lists are expanded with index-based paths and capped."""
 
+    @pytest.mark.covers("FC-ENT-08")
     def test_list_expands_to_indexed_paths(
         self, inverter: HybridInverter
     ) -> None:
@@ -291,6 +307,7 @@ class TestListWalking:
         assert inverter.sensor_entities["pvStrings.0.power"].native_value == 1.1
         assert inverter.sensor_entities["pvStrings.1.power"].native_value == 2.2
 
+    @pytest.mark.covers("FC-ENT-08")
     def test_list_truncates_beyond_max(
         self, inverter: HybridInverter, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -302,6 +319,7 @@ class TestListWalking:
         assert f"items.{_MAX_LIST_EXPANSION}.v" not in inverter.sensor_entities
         assert any("truncated list items" in r.message for r in caplog.records)
 
+    @pytest.mark.covers("FC-ENT-07")
     def test_dynamic_entity_cap(
         self,
         hass: HomeAssistant,
@@ -347,6 +365,7 @@ class TestDeduplication:
 class TestModelDrivenEntities:
     """Hardware-dependent entities follow the model block, not register presence."""
 
+    @pytest.mark.covers("FC-ENT-02")
     def test_three_phase_creates_phase_entities(self, hass: HomeAssistant) -> None:
         inverter = _make(hass, model=MODEL_THREE_PHASE_DUAL)
         for group in ("grid", "system"):
@@ -371,6 +390,30 @@ class TestModelDrivenEntities:
             is EntityCategory.DIAGNOSTIC
         )
 
+    @pytest.mark.covers("FC-ENT-01", "FC-ENT-02")
+    def test_every_phase_entity_has_its_documented_metadata(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass, model=MODEL_THREE_PHASE_DUAL)
+        expected = {
+            "power": ("kW", "power", 2, None),
+            "voltage": ("V", "voltage", 1, "mdi:sine-wave"),
+            "current": ("A", "current", 2, "mdi:current-ac"),
+        }
+        group_icons = {"grid": "mdi:transmission-tower", "system": "mdi:flash"}
+        for group in ("grid", "system"):
+            for phase in ("L1", "L2", "L3"):
+                for field, (unit, device_class, precision, icon) in expected.items():
+                    entity = inverter.sensor_entities[f"{group}.phases.{phase}.{field}"]
+                    assert entity.unique_id == f"abc123_{group}_phases_{phase}_{field}"
+                    assert entity.translation_key == f"{group}_phase_{field}"
+                    assert entity.translation_placeholders == {"phase": phase}
+                    assert entity.native_unit_of_measurement == unit
+                    assert entity.device_class == device_class
+                    assert entity.state_class == "measurement"
+                    assert entity.suggested_display_precision == precision
+                    assert entity.icon == (icon or group_icons[group])
+                    headline = group == "grid" and field == "power"
+                    assert entity.entity_category is (None if headline else EntityCategory.DIAGNOSTIC)
+
     def test_three_phase_updates_and_discovers_extra_phase_fields(
         self, hass: HomeAssistant
     ) -> None:
@@ -382,6 +425,7 @@ class TestModelDrivenEntities:
         assert inverter.sensor_entities["grid.phases.L1.voltage"].native_value == 231.0
         assert "grid.phases.L1.frequency" in inverter.sensor_entities
 
+    @pytest.mark.covers("FC-ENT-02")
     def test_single_phase_model_suppresses_phase_registers(
         self, hass: HomeAssistant
     ) -> None:
@@ -406,6 +450,7 @@ class TestModelDrivenEntities:
             (None, 0),
         ],
     )
+    @pytest.mark.covers("FC-ENT-03")
     def test_mppt_count_comes_from_model(
         self, hass: HomeAssistant, model: dict | None, expected: int
     ) -> None:
@@ -443,6 +488,7 @@ class TestModelDrivenEntities:
         assert "pv.mppts.3.power" not in inverter.sensor_entities
         assert not any(p.startswith("pv.mppts.2.index") for p in inverter.sensor_entities)
 
+    @pytest.mark.covers("FC-ENT-04")
     def test_batteries_from_discovery_reading(self, hass: HomeAssistant) -> None:
         state = {"battery": {"batteries": [{"index": 1}, {"index": 2}]}}
         inverter = _make(hass, model=MODEL_THREE_PHASE_DUAL, state=state)
@@ -455,6 +501,7 @@ class TestModelDrivenEntities:
             is EntityCategory.DIAGNOSTIC
         )
 
+    @pytest.mark.covers("FC-ENT-04")
     def test_battery_updates_and_new_battery_added_later(
         self, hass: HomeAssistant
     ) -> None:
@@ -484,6 +531,7 @@ class TestModelDrivenEntities:
             "abc123_battery_2_modules",
         }
 
+    @pytest.mark.covers("FC-ENT-05")
     def test_ratings_from_model(self, hass: HomeAssistant) -> None:
         inverter = _make(hass, model=MODEL_SINGLE_PHASE)
         rated = inverter.sensor_entities["model.maxAcPower"]
@@ -504,6 +552,7 @@ class TestModelDrivenEntities:
 class TestAvailability:
     """Entities go unavailable after repeated failed polls and recover."""
 
+    @pytest.mark.covers("FC-AVAIL-01")
     def test_threshold_and_recovery(
         self, hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -547,6 +596,7 @@ class TestAvailability:
 class TestMigrationSupport:
     """Mappings used by ``migration.py``."""
 
+    @pytest.mark.covers("FC-MIG-01")
     def test_positional_migrations(self, hass: HomeAssistant) -> None:
         state = {
             "pv": {"mppts": [{"index": 1}, {"index": 2}, {"index": 3}]},
@@ -563,6 +613,7 @@ class TestMigrationSupport:
         )
         assert migrations["battery_batteries_0_moduleCount"] == "battery_2_modules"
 
+    @pytest.mark.covers("FC-MIG-02")
     def test_obsolete_patterns_need_known_hardware(self, hass: HomeAssistant) -> None:
         assert _make(hass).obsolete_entity_patterns() == []
         assert _make(hass, model=MODEL_SINGLE_PHASE).obsolete_entity_patterns() == []
@@ -580,4 +631,321 @@ class TestMigrationSupport:
         curated = inverter.curated_entity_types
         assert "pv_power" in curated
         assert "mppt_1_power" in curated
+        assert "api_connection" in curated
         assert "newField" not in curated
+
+
+_JSON_VALUES = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(max_size=6),
+    lambda children: st.lists(children, max_size=3)
+    | st.dictionaries(st.text(max_size=8), children, max_size=4),
+    max_leaves=20,
+)
+_PAYLOADS = st.dictionaries(
+    st.sampled_from(
+        ["pv", "battery", "grid", "load", "system", "online", "status", "operatingMode", "model", "extra"]
+    ),
+    _JSON_VALUES,
+    max_size=6,
+)
+
+
+@pytest.mark.covers("FC-VAL-01", "FC-VAL-02")
+@settings(max_examples=200, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(first=_PAYLOADS, second=_PAYLOADS)
+def test_random_readings_never_raise_or_publish_invalid_values(
+    hass: HomeAssistant, first: dict[str, Any], second: dict[str, Any]
+) -> None:
+    inverter = _make(hass, model=MODEL_SINGLE_PHASE, state={"battery": {"batteries": [{"index": 1}]}})
+    for payload in (first, second):
+        inverter.update(payload)
+        for sensor in inverter.sensor_entities.values():
+            value = sensor.native_value
+            if sensor._numeric:
+                assert value is None or (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                ), (sensor.entity_id, value)
+                if sensor.state_class == "total_increasing":
+                    assert value is None or value >= 0
+            else:
+                assert not isinstance(value, (dict, list))
+        for binary_sensor in inverter.binary_sensor_entities.values():
+            assert binary_sensor.is_on in (True, False, None)
+
+
+class TestRobustness:
+    """Pathological payloads and repeated state changes."""
+
+    def test_deep_nesting_is_cut_off_and_reported_once(
+        self, inverter: HybridInverter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        payload: dict[str, Any] = {"leaf": 1.0}
+        for _ in range(hi._MAX_DEPTH + 3):
+            payload = {"deeper": payload}
+        caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+        inverter.update({"top": payload})
+        inverter.update({"top": payload})
+        warnings = [r for r in caplog.records if "levels deep" in r.getMessage()]
+        assert len(warnings) == 1
+        assert not any(path.endswith(".leaf") for path in inverter.sensor_entities)
+
+    @pytest.mark.covers("FC-ENT-06")
+    def test_a_value_that_is_not_json_creates_nothing(self, inverter: HybridInverter) -> None:
+        before = set(inverter.sensor_entities) | set(inverter.binary_sensor_entities)
+        inverter.update({"odd": object()})
+        assert set(inverter.sensor_entities) | set(inverter.binary_sensor_entities) == before
+
+    def test_state_changes_are_idempotent(
+        self, hass: HomeAssistant, inverter: HybridInverter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        writes = _attach(inverter.sensor_entities["pv.power"], hass, monkeypatch)
+        inverter.set_missing(True)
+        inverter.set_missing(True)
+        assert inverter.missing
+        assert len(writes) == 1
+        inverter.set_missing(False)
+        inverter.shut_down()
+        inverter.shut_down()
+        assert len(writes) == 3
+        assert not inverter.sensor_entities["pv.power"].available
+
+    @pytest.mark.parametrize(("levels", "kept"), [(hi._MAX_DEPTH - 2, True), (hi._MAX_DEPTH - 1, False)])
+    def test_the_depth_limit_is_exact(self, inverter: HybridInverter, levels: int, kept: bool) -> None:
+        payload: dict[str, Any] = {"leaf": 1.0}
+        for _ in range(levels):
+            payload = {"d": payload}
+        inverter.update({"top": payload})
+        assert any(path.endswith(".leaf") for path in inverter.sensor_entities) is kept
+
+    @pytest.mark.parametrize(("levels", "kept"), [(hi._MAX_DEPTH - 1, True), (hi._MAX_DEPTH, False)])
+    def test_nested_lists_count_towards_the_depth_limit(
+        self, inverter: HybridInverter, levels: int, kept: bool
+    ) -> None:
+        payload: Any = 1.0
+        for _ in range(levels):
+            payload = [payload]
+        inverter.update({"top": payload})
+        assert any(path.startswith("top.") for path in inverter.sensor_entities) is kept
+
+    def test_text_fields_keep_their_case(self, inverter: HybridInverter) -> None:
+        inverter.update({"firmwareVersion": "V1.2-RC", "status": "OnGrid"})
+        assert inverter.sensor_entities["firmwareVersion"].native_value == "V1.2-RC"
+        assert inverter.sensor_entities["status"].native_value == "ongrid"
+
+    def test_a_private_key_does_not_hide_the_keys_after_it(self, inverter: HybridInverter) -> None:
+        inverter.update({"extra": {"_private": 1, "after": 2}})
+        assert "extra.after" in inverter.sensor_entities
+        assert "extra._private" not in inverter.sensor_entities
+
+    def test_short_lists_are_not_reported_as_truncated(
+        self, inverter: HybridInverter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+        inverter.update({"strings": [{"power": 1.0}]})
+        assert not [r for r in caplog.records if "truncated list" in r.getMessage()]
+        long_list = [{"power": float(i)} for i in range(_MAX_LIST_EXPANSION + 1)]
+        inverter.update({"strings": long_list})
+        inverter.update({"strings": long_list})
+        assert len([r for r in caplog.records if "truncated list" in r.getMessage()]) == 1
+
+    @pytest.mark.covers("FC-AVAIL-01")
+    def test_the_failure_threshold_restarts_after_a_success(self, inverter: HybridInverter) -> None:
+        for _ in range(UNAVAILABLE_AFTER_FAILED_POLLS - 1):
+            inverter.record_poll_failure()
+        inverter.record_poll_success()
+        for _ in range(UNAVAILABLE_AFTER_FAILED_POLLS - 1):
+            inverter.record_poll_failure()
+        assert inverter.available is True
+        inverter.record_poll_failure()
+        assert inverter.available is False
+        inverter.record_poll_success()
+        inverter.mark_unavailable()
+        assert inverter.available is False
+
+    def test_a_new_inverter_has_not_been_read_yet(self, inverter: HybridInverter) -> None:
+        assert inverter.api_connected is None
+        assert inverter.last_success_at is None
+        assert inverter.offline is False
+        assert inverter.missing is False
+
+
+class TestEntityContracts:
+    """What each entity exposes to Home Assistant."""
+
+    @pytest.mark.covers("FC-ENT-10")
+    def test_the_api_connection_entity(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass, model=MODEL_SINGLE_PHASE)
+        entity = inverter.binary_sensor_entities[hi.API_CONNECTION_PATH]
+        assert entity.unique_id == "abc123_api_connection"
+        assert entity.entity_id == "binary_sensor.abc123_api_connection"
+        assert entity.translation_key == "api_connection"
+        assert entity.device_class == "connectivity"
+        assert entity.entity_category is EntityCategory.DIAGNOSTIC
+        assert entity.icon == "mdi:cloud-sync-outline"
+        assert entity.device_info is inverter.device_info
+        assert entity.auto_discovered is False
+        assert "api_connection" in inverter.curated_entity_types
+
+    @pytest.mark.covers("FC-ENT-05")
+    def test_rating_entities(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass, model=MODEL_SINGLE_PHASE)
+        for field, key, icon in (
+            ("maxAcPower", "rated_ac_power", "mdi:transmission-tower"),
+            ("maxDcPower", "rated_dc_power", "mdi:battery-charging-high"),
+        ):
+            entity = inverter.sensor_entities[f"model.{field}"]
+            assert entity.unique_id == f"abc123_model_{field}"
+            assert entity.translation_key == key
+            assert entity.native_unit_of_measurement == "kW"
+            assert entity.device_class == "power"
+            assert entity.state_class is None
+            assert entity.suggested_display_precision == 1
+            assert entity.icon == icon
+            assert entity.entity_category is EntityCategory.DIAGNOSTIC
+
+    @pytest.mark.covers("FC-ENT-04", "FC-ENT-05")
+    def test_entities_found_later_go_to_the_sensor_platform(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass, model={"threePhase": False}, state={})
+        inverter.update({"battery": {"batteries": [{"index": 4, "power": 1.0}]}, "model": {"maxAcPower": 6}})
+        platforms = [call.args[0] for call in inverter.controller.add_entities.call_args_list]
+        assert platforms == ["sensor", "sensor"]
+        battery_call, rating_call = inverter.controller.add_entities.call_args_list
+        assert {entity.entity_type for entity in battery_call.args[1]} == {
+            "battery_4_raw_state_of_charge", "battery_4_power", "battery_4_modules"
+        }
+        assert [entity.entity_type for entity in rating_call.args[1]] == ["model_maxAcPower"]
+
+    @pytest.mark.covers("FC-VAL-06")
+    def test_an_out_of_range_tracker_does_not_hide_the_others(
+        self, hass: HomeAssistant
+    ) -> None:
+        inverter = _make(hass, model=MODEL_SINGLE_PHASE)
+        inverter.update({"pv": {"mppts": [{"index": 3, "power": 9.0}, {"index": 1, "power": 1.0}]}})
+        assert inverter.sensor_entities["pv.mppts.1.power"].native_value == 1.0
+        unknown = _make(hass)
+        unknown.update({"pv": {"mppts": [{"index": 1, "power": 1.0}]}})
+        assert unknown.ignored_list_items == {
+            "pv.mppts:out_of_range:1": "MPPT index 1 cannot be placed: the model is unknown"
+        }
+        unknown.update({"battery": {"batteries": [{"index": "two"}]}})
+        assert "battery.batteries:no_index:'two'" in unknown.ignored_list_items
+
+    @pytest.mark.covers("FC-ENT-02")
+    def test_single_phase_machines_drop_both_phase_blocks(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass, model=MODEL_SINGLE_PHASE)
+        inverter.update({"system": {"phases": {"L1": {"power": 1.0}}}, "grid": {"phases": {"L1": {"power": 1.0}}}})
+        assert not any(".phases." in path for path in inverter.sensor_entities)
+
+    @pytest.mark.covers("FC-VAL-01")
+    @pytest.mark.parametrize(
+        ("path", "meta"),
+        [
+            ("unit_only", {"entity_type": "u", "unit": "%"}),
+            ("class_only", {"entity_type": "c", "device_class": SensorDeviceClass.POWER}),
+            ("state_class_only", {"entity_type": "s", "state_class": SensorStateClass.MEASUREMENT}),
+            ("decimals_only", {"entity_type": "d", "decimals": 0}),
+        ],
+    )
+    def test_any_numeric_hint_makes_a_sensor_numeric(
+        self, hass: HomeAssistant, path: str, meta: dict[str, Any]
+    ) -> None:
+        inverter = _make(hass)
+        sensor = inverter._create_sensor(path, meta)
+        sensor.set_native_value("text")
+        assert sensor.native_value is None
+        sensor.set_native_value("4")
+        assert sensor.native_value == 4.0
+
+    def test_a_text_sensor_keeps_text(self, hass: HomeAssistant) -> None:
+        sensor = _make(hass)._create_sensor("t", {"entity_type": "t"})
+        sensor.set_native_value("Hello")
+        assert sensor.native_value == "Hello"
+
+    def test_zero_decimals_is_a_display_precision(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass)
+        assert inverter.sensor_entities["battery.stateOfCharge"].suggested_display_precision == 0
+        assert inverter._create_sensor("n", {"entity_type": "n"}).suggested_display_precision is None
+
+    @pytest.mark.covers("FC-VAL-01", "FC-VAL-02")
+    def test_a_bad_value_after_a_good_one_is_still_reported(
+        self, inverter: HybridInverter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+        inverter.update({"online": True, "pv": {"power": 1.0}})
+        inverter.update({"online": "sometimes", "pv": {"power": "lots"}})
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("'sometimes'" in m for m in messages)
+        assert any("'lots'" in m for m in messages)
+        inverter.update({"online": None, "pv": {"power": None}})
+        assert len([m for m in messages if "unusable value" in m]) == 2
+
+    @pytest.mark.covers("FC-VAL-04", "FC-VAL-05")
+    def test_each_counter_problem_is_reported_once(
+        self, inverter: HybridInverter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+        for value in (5.0, 4.0, 5.0, 4.0, 5.0, -1.0, 5.0, -2.0):
+            inverter.update({"pv": {"energyToday": value}})
+        messages = [r.getMessage() for r in caplog.records if "withheld" in r.getMessage()]
+        assert len(messages) == 2
+        assert "decrease reading of 4.0" in messages[0]
+        assert "(last reported 5.0)" in messages[0]
+        assert "negative reading of -1.0" in messages[1]
+
+    def test_auto_discovered_entities_carry_their_own_name(self, hass: HomeAssistant) -> None:
+        inverter = _make(hass)
+        inverter.update({"extra": {"cellTemperature": 21.0, "fanRunning": True}})
+        sensor = inverter.sensor_entities["extra.cellTemperature"]
+        binary = inverter.binary_sensor_entities["extra.fanRunning"]
+        for entity, name in ((sensor, "Extra Cell Temperature"), (binary, "Extra Fan Running")):
+            assert entity.name == name
+            assert entity.translation_key is None
+            assert entity.auto_discovered is True
+            assert entity.entity_category is EntityCategory.DIAGNOSTIC
+
+    def test_obsolete_patterns_cover_positional_batteries(self, hass: HomeAssistant) -> None:
+        patterns = _make(hass, model=MODEL_SINGLE_PHASE, state={}).obsolete_entity_patterns()
+        assert any(p.match("battery_batteries_0_power") for p in patterns)
+        assert not any(p.match("battery_1_power") for p in patterns)
+
+
+class TestCounterGuard:
+    """TotalIncreasingGuard on its own."""
+
+    def test_problems_are_named(self) -> None:
+        guard = hi.TotalIncreasingGuard()
+        assert guard.judge(-1.0) == (None, "negative")
+        assert guard.judge(5.0) == (5.0, None)
+        assert guard.judge(4.0) == (None, "decrease")
+
+    def test_a_drop_to_exactly_ninety_percent_is_a_reset(self) -> None:
+        guard = hi.TotalIncreasingGuard()
+        guard.judge(10.0)
+        guard.judge(9.0)
+        assert guard.judge(9.0) == (9.0, None)
+        assert guard.reference == 9.0
+
+    def test_restoring(self) -> None:
+        guard = hi.TotalIncreasingGuard()
+        guard.restore(-1.0)
+        assert guard.reference is None
+        guard.restore(0.5)
+        assert guard.reference == 0.5
+        assert guard.judge(0.4) == (None, "decrease")
+        guard.restore(0.2)
+        assert guard.reference == 0.5, "a lower restored value never lowers the reference"
+
+
+class TestOnlineFlag:
+    """How the ``online`` field drives the offline state."""
+
+    @pytest.mark.covers("FC-AVAIL-03")
+    def test_offline_without_an_online_field_is_not_assumed(self, inverter: HybridInverter) -> None:
+        inverter.update({"pv": {"power": 1.0}})
+        assert not inverter.offline
+        inverter.update({"online": False})
+        assert inverter.offline
+        inverter.update({"online": "unknown"})
+        assert not inverter.offline, "an unparseable online flag does not hide telemetry"
