@@ -144,7 +144,7 @@ def run_baseline(baseline: str, python: str) -> dict[str, dict]:
                 shutil.copy2(ROOT / name, tree / name)
         report = workdir / "defects.json"
         run = subprocess.run(
-            [python, *_pytest_args(report), "--continue-on-collection-errors"],
+            [python, *_pytest_args(report), "--continue-on-collection-errors", "-n", "auto"],
             cwd=tree,
             check=False,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},

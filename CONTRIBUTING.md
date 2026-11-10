@@ -41,13 +41,13 @@ python3.14 -m venv /tmp/venv-newest
 /tmp/venv-newest/bin/pip install pytest-homeassistant-custom-component hypothesis==6.170.15 mypy==2.4.1
 /tmp/venv-newest/bin/pip install --upgrade --no-deps homeassistant
 /tmp/venv-newest/bin/python tests/compat/install_missing_requirements.py
-/tmp/venv-newest/bin/python tests/compat/run_newest_ha.py
+/tmp/venv-newest/bin/python tests/compat/run_newest_ha.py -n auto
 ```
 
-`tests/compat/run_newest_ha.py` runs pytest after applying the shims a newer
-Home Assistant needs on an older test package. It takes pytest's arguments
-and never touches the integration. Run it without `-n`: the shims are applied
-in its own process only, not in parallel workers.
+`tests/compat/run_newest_ha.py` runs pytest with the shims a newer Home
+Assistant needs on an older test package (`tests/compat/newest_ha_shims.py`,
+loaded as a plugin by every process). It takes pytest's arguments, `-n`
+included, and never touches the integration.
 
 ## Repository layout
 
@@ -65,8 +65,8 @@ in its own process only, not in parallel workers.
 | `tests/functional_coverage.py` | The functional coverage model. |
 | `tests/DEFECTS.md` | The defect ledger. |
 | `tests/*_report.md` | Generated: functional coverage, red check, mutation testing. Commit them with the change that alters them. |
-| `tests/tools/` | `check_red.py`, `check_mutants.py`, `write_mutation_report.py`, `classify_mutants.py`. |
-| `tests/compat/` | The newest-Home-Assistant runner and its installer. |
+| `tests/tools/` | `check_red.py`, `check_mutants.py`, `mutation_shards.py`, `write_mutation_report.py`, `classify_mutants.py`. |
+| `tests/compat/` | The newest-Home-Assistant runner, its shims plugin and its installer. |
 | `ruff.toml`, `mypy.ini`, `vulture_whitelist.py`, `pytest.ini`, `pyproject.toml` | Tool configuration (coverage and mutmut live in `pyproject.toml`). |
 
 ## Running the tests
@@ -297,16 +297,30 @@ is a change to the code that no test notices.
 
 ```bash
 rm -rf mutants                                      # a full run; incremental runs can keep stale results
-.venv/bin/mutmut run --max-children 8               # about 40 minutes
+.venv/bin/mutmut run --max-children $(nproc)        # every mutant; about 45 minutes on 8 cores
 .venv/bin/python tests/tools/classify_mutants.py   # survivors grouped by function, with their diffs
 .venv/bin/python tests/tools/write_mutation_report.py
 .venv/bin/python tests/tools/check_mutants.py
 ```
 
+The run can be split across machines: `tests/tools/mutation_shards.py`
+assigns every mutated function to one of N shards, balanced by an estimate
+of its mutants, and runs `mutmut run` on one shard; `check_mutants.py
+--shard K --of N` then checks that shard's survivors. CI runs eight shards at
+once (about a quarter of an hour instead of two hours):
+
+```bash
+.venv/bin/python tests/tools/mutation_shards.py run 3 8 --max-children $(nproc)
+.venv/bin/python tests/tools/check_mutants.py --shard 3 --of 8
+```
+
+The report (`write_mutation_report.py`) needs every mutant's result, so it
+is written from a full run.
+
 Kill a survivor with a test. If it cannot be killed (an equivalent mutant,
 or only the wording of a message whose meaning the tests assert), add a rule
 to `write_mutation_report.py` explaining why. The report generator fails on a
-survivor no rule explains, and `check_mutants.py` (run weekly in CI) fails on
+survivor no rule explains, and `check_mutants.py` (run weekly in CI, per shard) fails on
 an unjustified survivor or a stale justification. Log calls are not mutated:
 their wording is not behaviour, and that faults are logged is asserted
 separately.
@@ -315,11 +329,11 @@ separately.
 
 | Workflow | Runs | On |
 | --- | --- | --- |
-| `tests.yaml` | The suite with the coverage gate on Home Assistant 2026.3 and the latest test package; a non-blocking canary on the newest Home Assistant | push, pull request, weekly |
+| `tests.yaml` | The suite, in parallel (`-n auto`), with the coverage gate on Home Assistant 2026.3 and the latest test package; a non-blocking canary on the newest Home Assistant | push, pull request, weekly |
 | `lint.yaml` | ruff and vulture; mypy on 2026.3 and latest | push, pull request |
 | `hassfest.yaml` | Home Assistant's integration validator | push, pull request, daily |
 | `validate.yaml` | The HACS validator | push, pull request, daily |
-| `mutation.yaml` | A full mutation run and `check_mutants.py` | weekly, on demand |
+| `mutation.yaml` | Mutation testing in eight parallel shards, each with `check_mutants.py` | weekly, on demand |
 
 ## Changing the integration
 

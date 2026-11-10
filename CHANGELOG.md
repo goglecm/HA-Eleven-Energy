@@ -5,6 +5,17 @@ captured here. Versions correspond to the `version` field in
 `custom_components/eleven_energy_plus/manifest.json`, and the format roughly
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Tests
+
+- Faster checks, nothing skipped. The test jobs, including the canary on the
+  newest Home Assistant, run in parallel (`-n auto`); mutation testing is
+  split by function into eight shards that run at once
+  (`tests/tools/mutation_shards.py`, `check_mutants.py --shard`); the red
+  check runs its baselines in parallel; the ruff and vulture job installs
+  only those two tools; pip downloads are cached.
+
 ## 2.0.1 - 2026-11-10
 
 Two reviews after 2.0.0 - of the parts its audit did not harden (the

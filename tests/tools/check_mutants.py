@@ -6,17 +6,25 @@ Run after ``mutmut run``. Every mutant mutmut did not detect (``survived``,
 equivalent mutant, typically). A listed mutant that no longer survives is
 reported too, so the table does not go stale.
 
+With ``--shard SHARD --of COUNT`` only the mutants of that shard
+(``tests/tools/mutation_shards.py``) are compared, so each parallel job
+checks what it ran.
+
 Usage::
 
     mutmut run && python tests/tools/check_mutants.py
+    python tests/tools/mutation_shards.py run 3 8 && python tests/tools/check_mutants.py --shard 3 --of 8
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import re
 import subprocess
 import sys
+
+from mutation_shards import in_shard
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORT = ROOT / "tests" / "mutation_report.md"
@@ -56,8 +64,21 @@ def justified_mutants() -> set[str]:
 
 def main() -> int:
     """Compare mutmut's survivors with the justified ones."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--shard", type=int, default=None)
+    parser.add_argument("--of", type=int, default=None, dest="count")
+    args = parser.parse_args()
+    if (args.shard is None) != (args.count is None):
+        parser.error("--shard and --of go together")
     survivors = surviving_mutants()
     justified = justified_mutants()
+    if args.shard is not None:
+        survivors = {
+            mutant: status
+            for mutant, status in survivors.items()
+            if in_shard(mutant, args.shard, args.count)
+        }
+        justified = {mutant for mutant in justified if in_shard(mutant, args.shard, args.count)}
     unjustified = sorted(set(survivors) - justified)
     stale = sorted(justified - set(survivors))
     for mutant in unjustified:
