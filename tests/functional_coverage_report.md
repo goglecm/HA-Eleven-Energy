@@ -121,7 +121,7 @@ passing tests on the last full run. Model: `tests/functional_coverage.py`.
 | FC-LIFE-04 | A reload keeps the actions, leaves no stale state and stops the old poller | 3 |
 | FC-LIFE-05 | Removing the entry cleans up everything it created | 2 |
 | FC-LIFE-06 | YAML configuration is not supported | 1 |
-| FC-STATIC-01 | services.yaml satisfies hassfest's current rules | 4 |
+| FC-STATIC-01 | services.yaml satisfies hassfest's current rules | 3 |
 | FC-STATIC-02 | Translations are complete and contain no unused keys | 5 |
 | FC-STATIC-03 | Every Home Assistant import is public on the installed version | 109 |
 | FC-STATIC-04 | manifest.json and hacs.json carry the required fields | 2 |

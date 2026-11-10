@@ -36,10 +36,11 @@ jobs:
           python-version: "3.14"
           cache: "pip"
           cache-dependency-path: "dev-requirements.txt"
+      # uv installs the same pinned packages as pip, several times faster.
       - name: Install test dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install "${{ matrix.requirement }}" hypothesis==6.170.15
+          python -m pip install uv
+          uv pip install --system "${{ matrix.requirement }}" hypothesis==6.170.15
       # Full run, in parallel on every core: 100 % line + branch coverage
       # and the functional-coverage gate (tests/functional_coverage.py) are
       # both enforced.
@@ -64,9 +65,9 @@ jobs:
           cache-dependency-path: "dev-requirements.txt"
       - name: Install newest Home Assistant over the latest test package
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pytest-homeassistant-custom-component hypothesis==6.170.15
-          python -m pip install --upgrade --no-deps homeassistant
+          python -m pip install uv
+          uv pip install --system pytest-homeassistant-custom-component hypothesis==6.170.15
+          uv pip install --system --upgrade --no-deps homeassistant
           python tests/compat/install_missing_requirements.py
       - name: Run the test suite
         run: python tests/compat/run_newest_ha.py -n auto

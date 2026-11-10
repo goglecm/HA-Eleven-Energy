@@ -33,7 +33,9 @@ jobs:
           python-version: "3.14"
           cache: "pip"
           cache-dependency-path: "dev-requirements.txt"
-      - run: python -m pip install -r dev-requirements.txt
+      - run: |
+          python -m pip install uv
+          uv pip install --system -r dev-requirements.txt
       - run: python tests/tools/mutation_shards.py run ${{ matrix.shard }} 8 --max-children 4
       # Fails if a mutant of this shard survives that is not justified in
       # tests/mutation_report.md, or a justified one no longer survives.

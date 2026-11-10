@@ -14,7 +14,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   split by function into eight shards that run at once
   (`tests/tools/mutation_shards.py`, `check_mutants.py --shard`); the red
   check runs its baselines in parallel; the ruff and vulture job installs
-  only those two tools; pip downloads are cached.
+  only those two tools; packages are installed with uv, several times faster
+  than pip, and downloads are cached.
 
 ## 2.0.1 - 2026-11-10
 
