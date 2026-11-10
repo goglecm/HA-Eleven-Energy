@@ -21,6 +21,7 @@ import email.utils
 import logging
 from typing import Any
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote, unquote
 
 import pytest
 import voluptuous as vol
@@ -533,7 +534,7 @@ def test_unexpected_indices_are_reported(
     caplog.set_level(logging.WARNING, logger=HI_LOGGER)
     inverter.update(reading)
     inverter.update(copy.deepcopy(reading))
-    warnings = [r.getMessage() for r in caplog.records if needle in r.getMessage()]
+    warnings = [r.getMessage() for r in caplog.records if r.name == HI_LOGGER and needle in r.getMessage()]
     assert len(warnings) == 1, "reported exactly once, not silently and not every poll"
 
 
@@ -727,7 +728,9 @@ def test_stored_poll_interval_is_parsed_strictly(
     controller = Controller("t", hass, entry)
     assert controller.poll_interval == expected
     assert controller.poll_interval == expected
-    warnings = [r for r in caplog.records if "interval" in r.getMessage().lower()]
+    warnings = [
+        r for r in caplog.records if r.name == CONTROLLER_LOGGER and "interval" in r.getMessage().lower()
+    ]
     assert len(warnings) == (1 if warns else 0), "reported once, never silently"
 
 
@@ -1455,7 +1458,9 @@ async def test_diagnostics_report_a_failed_version_lookup(
         dump = await async_get_config_entry_diagnostics(hass, entry)
     assert dump["integration"]["version"] == "unknown"
     assert any(
-        "version" in record.getMessage().lower() and record.levelno >= logging.WARNING
+        record.name == "custom_components.eleven_energy_plus.diagnostics"
+        and "version" in record.getMessage().lower()
+        and record.levelno >= logging.WARNING
         for record in caplog.records
     ), "the failed lookup was swallowed without a log line"
 
@@ -1491,3 +1496,58 @@ async def test_diagnostics_redact_personal_fields(
     assert await setup_entry(hass, entry)
     dump = await async_get_config_entry_diagnostics(hass, entry)
     assert str(_PII[field]) not in repr(dump)
+
+
+# ---------------------------------------------------------------------------
+# Defect class "addressing" (D42): every request path built from a device id
+# ---------------------------------------------------------------------------
+
+# Ids the API could list that are not a plain path segment: unencoded, the
+# first lands on device ``b`` and the second on the API root.
+_UNSAFE_IDS = {"traversal": "x/../b", "dot_segment": ".."}
+
+
+def _addresses(call_url: URL, device_id: str) -> bool:
+    """Whether a request went to ``device_id``'s own resource (or the site)."""
+    parts = call_url.raw_path.split("/")
+    if call_url.raw_path == URL(f"{BASE_URL}site").raw_path:
+        return True
+    return len(parts) > 4 and parts[3] == "devices" and unquote(parts[4]) == device_id
+
+
+@pytest.mark.defect("D42")
+@pytest.mark.covers("FC-DISC-08")
+@pytest.mark.parametrize("unsafe", list(_UNSAFE_IDS))
+async def test_a_device_id_only_ever_addresses_its_own_device(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, unsafe: str
+) -> None:
+    device_id = _UNSAFE_IDS[unsafe]
+    encoded = quote(device_id, safe="")
+    aioclient_mock.get(f"{BASE_URL}site", json={"devices": [site_summary(device_id), site_summary("b")]})
+    for target in (f"devices/{encoded}", "devices/b", ""):
+        aioclient_mock.get(f"{BASE_URL}{target}", json=device_payload(device_id))
+        aioclient_mock.post(f"{BASE_URL}{target}/operatingMode", status=200)
+    aioclient_mock.post(f"{BASE_URL}operatingMode", status=200)
+    entry = api_key_entry()
+    assert await setup_entry(hass, entry)
+    controller = entry.runtime_data
+    aioclient_mock.mock_calls.clear()
+
+    if device_id in controller.devices:
+        device = next(
+            device
+            for device in dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+            if (DOMAIN, device_id) in device.identifiers
+        )
+        await controller.set_work_mode("set_work_mode_pv_export", {"device_id": device.id})
+    await controller.poll_devices()
+    requests = [call[1] for call in aioclient_mock.mock_calls]
+    assert requests, "the other inverter is still polled"
+    stray = [
+        str(url)
+        for url in requests
+        if not _addresses(url, device_id) and not _addresses(url, "b")
+    ]
+    assert not stray, f"requests left their device: {stray}"
+    for_b = [url for url in requests if _addresses(url, "b") and str(url).endswith("operatingMode")]
+    assert not for_b, "a command for another id must never reach inverter b"

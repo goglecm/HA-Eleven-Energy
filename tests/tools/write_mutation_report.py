@@ -84,9 +84,16 @@ RULES: tuple[Rule, ...] = (
     ),
     Rule(
         "Equivalent: clearing an issue does not use the inverter's name, and "
-        "`False`/`None` both mean \"present\".",
+        "`False`/`None` both say the condition is absent.",
         ("controller.Controller._track_missing", "controller.Controller.set_work_mode"),
-        r"report_missing\(device_id, device\.display_name, False\)|report_work_mode_result\(device_id, self\._device_name\(device_id\), None\)",
+        r"report_(missing|offline)\(device_id, device\.display_name, False\)"
+        r"|report_work_mode_result\(device_id, (self|owner)\._device_name\(device_id\), None\)",
+    ),
+    Rule(
+        "Equivalent: `X` is an unreserved character, which `quote` never encodes, "
+        "so adding it to `safe` changes nothing.",
+        ("controller.device_path",),
+        r"quote\(device_id, safe=''\)",
     ),
     Rule(
         "Equivalent: `None` and `False` both clear the credential notification.",

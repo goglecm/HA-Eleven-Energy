@@ -92,7 +92,7 @@ async def _async_integration_version(hass: HomeAssistant) -> str:
 def _controller_snapshot(controller: Controller) -> dict[str, Any]:
     """Describe the live controller state."""
     return {
-        "loaded": True,
+        "loaded": not controller.terminated,
         "credential": (
             "account sign-in" if controller.uses_account_sign_in else "API token"
         ),
@@ -151,7 +151,9 @@ async def async_get_config_entry_diagnostics(
 
     When no controller is loaded, ``controller`` is ``{"loaded": False}`` and
     ``raw_payloads`` is ``{"site": None, "devices": []}``, so consumers can
-    tell "not yet polled" from "polled with no devices".
+    tell "not yet polled" from "polled with no devices". A controller that
+    has stopped but is still attached (after a failed unload or setup) is
+    described as usual, with ``loaded`` False.
     """
     data = dict(entry.data)
     diagnostics: dict[str, Any] = {

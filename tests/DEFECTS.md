@@ -1,6 +1,7 @@
 # Defect ledger
 
-Every defect found in the audit, with the tests that catch it. Each defect
+Every defect found in the audit (D01-D34) and in the follow-up review of the
+parts it did not harden (D35-D43), with the tests that catch it. Each defect
 went through the same protocol:
 
 1. a ledger entry (this file);
@@ -13,14 +14,16 @@ went through the same protocol:
 5. **green**: the tests and the whole suite pass.
 
 `tests/tools/check_red.py` re-proves step 3 reproducibly: it runs the current
-defect tests against the baseline commit `29b385d` (the code before the
-audit) and requires every test of a `fails` entry to fail there for a real
-reason (an import error does not count). Its output is in
-`tests/red_check_report.md`. `tests/test_static_analysis.py` checks that every
-entry has a tagged test and every tag names an entry.
+defect tests against the commit that had the defect and requires every test
+of a `fails` entry to fail there for a real reason (an import error does not
+count). Its output is in `tests/red_check_report.md`.
+`tests/test_static_analysis.py` checks that every entry has a tagged test and
+every tag names an entry.
 
-Baseline column: `fails` = the defect exists in `29b385d` and its tests must
-fail there; `n/a (...)` = nothing to fail against (missing test, test tooling
+Baseline column: `fails` = the defect exists in `29b385d` (the code before the
+audit) and its tests must fail there; `fails at <sha>` = the defect was
+introduced later (by the audit commit `db7904c`) and its tests must fail on
+that commit; `n/a (...)` = nothing to fail against (missing test, test tooling
 or new behaviour), with the reason. Such entries are proved by guard tests,
 which `check_red.py` requires to *pass* on the baseline.
 
@@ -32,7 +35,8 @@ Defect classes: **stale** (old values shown as current), **coercion**
 (numbers/booleans), **silent** (failure not reported), **classification**
 (wrong error kind), **availability**, **time**, **counter** (statistics),
 **index**, **flow** (credential entry points), **lifecycle**, **typing**,
-**static** (lint, translations, imports), **privacy**.
+**static** (lint, translations, imports), **privacy**, **addressing**
+(a request reaching something other than its target).
 
 | ID | Module | Class | Impact | Baseline | Tests | Red evidence (before fix) | Green evidence (after fix) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -70,3 +74,12 @@ Defect classes: **stale** (old values shown as current), **coercion**
 | D32 | config_flow.py | coercion | The options form silently replaces a NaN interval with the default and truncates fractions | fails | test_defect_classes::test_options_poll_interval_is_never_silently_replaced, test_static_analysis::test_no_except_block_swallows_an_error_silently | 3/3 red: NaN saved as 30 s and 45.5 saved as 45 s with no error; the AST scan flags config_flow.py:295 and controller.py:354 | 3/3 defect tests pass; 2/2 guards pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
 | D33 | hybrid_inverter.py | counter | After a restart the first counter reading is accepted unconditionally, so a glitch then is recorded as a meter reset; the poller's immediate re-read would also confirm it | fails | test_defect_classes::test_counter_is_judged_against_its_value_before_a_restart | 2/2 red: with 5.0 restored, a first reading of 0.0 shows `0.0`, not unknown (the Energy dashboard would book a reset) | 2/2 defect tests pass; 1/1 guard pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
 | D34 | diagnostics.py | static | `raw_payloads.devices` is a dict when no controller is loaded but a list when one is | fails | test_diagnostics::TestDiagnostics::test_dump_without_loaded_controller | 1/1 red: `raw_payloads` is `{'site': None, 'devices': {}}` with no controller loaded | 1/1 defect test pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
+| D35 | oauth.py | flow | Two sign-ins open at once (two set-up attempts, or a reauthentication beside a reconfigure) share one PKCE verifier, so the first to finish fails | fails | test_oauth::test_two_sign_ins_open_at_once_each_keep_their_own_verifier, ::test_a_reauthentication_survives_a_reconfigure_started_alongside | 2/2 red: the first flow's code exchange sends the second flow's verifier, which does not match its challenge | 2/2 defect tests pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
+| D36 | hybrid_inverter.py | stale | An inverter that comes back to the site listing shows its values from before it left until three polls have failed | fails at db7904c | test_lifecycle_races::test_an_inverter_that_comes_back_shows_nothing_old_until_read | 1/1 red: after the inverter is listed again, a failed poll leaves `sensor.abc_pv_power` showing its value from before it went missing | 1/1 defect test pass; 1/1 guard pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
+| D37 | notifications.py, controller.py | lifecycle | A report that arrives after unload (a command still running) raises a repair issue and notification that nothing will clear; after a reload the old reporter also keeps saving optimiser timers over the new one's, and the new one cannot clear the old one's issue | fails at db7904c | test_lifecycle_races::test_nothing_is_shown_once_the_reporter_is_unloaded, ::test_an_unloaded_reporter_stores_nothing, ::test_a_command_still_running_at_unload_leaves_nothing_behind, ::test_a_command_finishing_after_a_reload_reports_to_the_new_controller | 10/10 red: after unload each of the 6 reports raises its issue or notification and a timer is still stored; a command answered HTTP 400 after unload leaves `work_mode_failed_abc`; one finishing after a reload is recorded on the stopped controller, not the running one | 10/10 defect tests pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
+| D38 | controller.py | lifecycle | A result that arrives for an inverter deleted meanwhile raises an issue for it (command) or stores its reading (poll; latent, since only unlisted inverters can be deleted and those are not polled) | fails at db7904c | test_lifecycle_races::test_a_command_to_an_inverter_deleted_meanwhile_reports_nothing, ::test_a_reading_for_an_inverter_deleted_meanwhile_is_dropped | 2/2 red: a failed command to an inverter deleted mid-flight raises `work_mode_failed_b`; a reading landing after deletion is stored for diagnostics | 2/2 defect tests pass; 1/1 guard pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
+| D39 | diagnostics.py | lifecycle | After a failed unload the diagnostics report the stopped controller as loaded | fails | test_diagnostics::test_a_stopped_controller_is_not_reported_as_loaded | 1/1 red: `controller.loaded` is True after a failed unload | 1/1 defect test pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
+| D40 | controller.py | time | Outage timers run through time their condition was not observed: the cloud timer through a rejected credential (an answer), an inverter's offline timer while it is missing | fails at db7904c | test_lifecycle_races::test_a_rejected_credential_proves_the_cloud_was_reachable, ::test_an_inverter_back_in_the_listing_restarts_its_offline_timer | 2/2 red: `cloud_unreachable` raised two minutes after the API answered 401; `inverter_offline` raised the moment a relisted inverter reads offline | 2/2 defect tests pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
+| D41 | \_\_init\_\_.py | lifecycle | After a failed unload a listed inverter's device cannot be deleted although nothing polls the site | fails at db7904c | test_lifecycle_races::test_devices_can_be_deleted_once_the_controller_has_stopped | 1/1 red: deletion is refused for a stopped controller's listed inverter | 1/1 defect test pass; 1/1 guard pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
+| D42 | controller.py | addressing | A device id from the site listing is used unencoded in request paths, so `x/../b` reads and commands inverter `b`, and `..` addresses the API root | fails | test_defect_classes::test_a_device_id_only_ever_addresses_its_own_device | 2/2 red: the work mode for `x/../b` is posted to `devices/b/operatingMode`; `..` is read from and posted to the API root | 2/2 defect tests pass on HA 2026.3.4, 2026.10.4 and 2026.11.1 |
+| D43 | tests/conftest.py | silent | Under pytest-xdist (`pytest -n`) the functional-coverage gate is not applied, and each worker overwrites the report with its own share of the tests | n/a (test tooling; proven by self-tests and a parallel run) | test_static_analysis::test_parallel_workers_hand_their_markers_to_the_controller, ::test_a_parallel_worker_neither_writes_reports_nor_applies_the_gate (guards) | n/a: test tooling; a full `pytest -n 4` run exited 0 with the report showing 43/117 items and 68/214 cells (one worker's share) | 2/2 guards pass on HA 2026.3.4, 2026.10.4 and 2026.11.1; a full `pytest -n 4` run writes the complete report (117/117, 214/214) and applies the gate |

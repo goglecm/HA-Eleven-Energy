@@ -575,6 +575,51 @@ def test_misuse_guard_recognises_every_report_kind(message: str, misuse: bool) -
     assert is_integration_misuse(message) is misuse
 
 
+@pytest.mark.guard("D43")
+@pytest.mark.covers("FC-STATIC-06")
+def test_parallel_workers_hand_their_markers_to_the_controller() -> None:
+    from .conftest import _Collector, merge_worker_output, worker_output
+
+    first, second = _Collector(), _Collector()
+    first.full_run = second.full_run = True
+    first.marks = {"t::a": {"defect": [], "guard": [], "covers": ["FC-CMD-01"]}}
+    second.marks = {"t::b": {"defect": ["D01"], "guard": [], "covers": []}}
+    second.unknown_ids["FC-NOPE-01"].add("t::b")
+
+    controller = _Collector()
+    for worker in (first, second):
+        merge_worker_output(controller, worker_output(worker))
+    assert controller.full_run, "the controller collects nothing of its own"
+    assert controller.marks == {**first.marks, **second.marks}
+    assert controller.unknown_ids == {"FC-NOPE-01": {"t::b"}}
+
+
+@pytest.mark.guard("D43")
+@pytest.mark.covers("FC-STATIC-06")
+def test_a_parallel_worker_neither_writes_reports_nor_applies_the_gate(tmp_path: Path) -> None:
+    from . import conftest
+
+    class _Config:
+        def __init__(self) -> None:
+            self.workerinput: dict[str, Any] = {}
+            self.workeroutput: dict[str, Any] = {}
+
+        def getoption(self, name: str) -> Any:
+            return {"--defect-report": str(tmp_path / "defects.json"), "--functional-coverage": "strict"}[name]
+
+    class _Session:
+        config = _Config()
+        exitstatus = 0
+
+    before = conftest.FUNCTIONAL_REPORT.read_text(encoding="utf-8")
+    session = _Session()
+    conftest.pytest_sessionfinish(session, 0)  # type: ignore[arg-type]
+    assert session.exitstatus == 0
+    assert not (tmp_path / "defects.json").exists()
+    assert conftest.FUNCTIONAL_REPORT.read_text(encoding="utf-8") == before
+    assert set(session.config.workeroutput) == {conftest.WORKER_OUTPUT_KEY}
+
+
 # ---------------------------------------------------------------------------
 # Ledger consistency
 # ---------------------------------------------------------------------------

@@ -43,11 +43,15 @@ Failure handling, in one place:
 * An inverter missing from :data:`~.const.MISSING_AFTER_SITE_POLLS`
   consecutive site listings goes unavailable, with a repair issue; its
   device can then be deleted.
+* Device ids from the listing go into request paths encoded as a single
+  path segment (:func:`device_path`), so no id can address another device.
 
 Everything here is async and cancellation-safe: the poller waits on a
 ``poll now`` event (set by option changes and successful commands), and
 both the poller and the POST backoff wake immediately on the separate
-``shutdown`` event that :meth:`terminate` sets.
+``shutdown`` event that :meth:`terminate` sets. A command can outlive its
+controller (an unload or reload while it is being sent); its outcome is then
+reported to the controller running the entry, if any.
 """
 
 from __future__ import annotations
@@ -59,6 +63,7 @@ from dataclasses import dataclass, field
 import logging
 import time
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import aiohttp
 
@@ -224,21 +229,49 @@ def api_device_label(summary: dict[str, Any], state: dict[str, Any] | None) -> s
     return "Inverter"
 
 
+# Ids that no encoding can make a path segment of their own: in a URL they
+# mean "this directory" and "the parent directory".
+_DOT_SEGMENTS = frozenset({".", ".."})
+_refused_ids: set[str] = set()
+
+
 def listed_inverter_ids(payload: dict[str, Any]) -> list[str]:
-    """Return the device ids of the hybrid inverters in a ``/site`` payload."""
+    """Return the device ids of the hybrid inverters in a ``/site`` payload.
+
+    An id that cannot address a device of its own (``.`` or ``..``) is left
+    out, with a warning the first time it is seen.
+    """
     ids: list[str] = []
     for summary in payload.get("devices", []):
         if not isinstance(summary, dict):
             continue
         device_id = summary.get("deviceId")
         if (
-            isinstance(device_id, str)
-            and device_id
-            and summary.get("type") == "hybridinverter"
-            and device_id not in ids
+            not isinstance(device_id, str)
+            or not device_id
+            or summary.get("type") != "hybridinverter"
+            or device_id in ids
         ):
-            ids.append(device_id)
+            continue
+        if device_id in _DOT_SEGMENTS:
+            if device_id not in _refused_ids:
+                _refused_ids.add(device_id)
+                _LOGGER.warning(
+                    "Eleven Energy Plus ignored an inverter listed with the "
+                    "unusable device id %r",
+                    device_id,
+                )
+            continue
+        ids.append(device_id)
     return ids
+
+
+def device_path(device_id: str, suffix: str = "") -> str:
+    """Return the API path of a device, its id encoded as one path segment.
+
+    Unencoded, an id such as ``x/../b`` would address device ``b``.
+    """
+    return f"devices/{quote(device_id, safe='')}{suffix}"
 
 
 class ElevenEnergyAuthError(Exception):
@@ -644,6 +677,9 @@ class Controller:
         )
         for device in self.devices.values():
             device.mark_unavailable()
+        # A rejection is an answer, and polling now pauses, so the
+        # unreachable-cloud timer must not run on through it.
+        self.faults.report_poll_cycle(True)
         if not self._initialising:
             self.faults.report_credential(True)
             self.entry.async_start_reauth(self.hass)
@@ -700,7 +736,7 @@ class Controller:
 
     async def _fetch_device(self, device_id: str) -> dict[str, Any]:
         """Return the validated ``/devices/<id>`` payload."""
-        status, body, retry_after = await self._request("GET", f"devices/{device_id}")
+        status, body, retry_after = await self._request("GET", device_path(device_id))
         if status == 429:
             raise self._rate_limited(f"device {device_id}", retry_after)
         if status != 200:
@@ -992,16 +1028,36 @@ class Controller:
             result["error"] = f"internal error ({type(err).__name__}: {err})"
             result["error_kind"] = ErrorKind.INTERNAL_ERROR
 
+        owner = self._running_controller()
         device_id = result["device_id"]
         kind = result["error_kind"]
+        if owner is None or (device_id is not None and device_id not in owner.devices):
+            # Nothing is running the entry, or the inverter was deleted while
+            # the command was in flight: nothing would clear an issue.
+            return result
         if result["success"]:
-            self.faults.report_work_mode_result(device_id, self._device_name(device_id), None)
-            self.faults.record_work_mode(device_id, mode)
+            owner.faults.report_work_mode_result(device_id, owner._device_name(device_id), None)
+            owner.faults.record_work_mode(device_id, mode)
         elif kind in _ISSUE_KINDS:
-            self.faults.report_work_mode_result(
-                device_id or "site", self._device_name(device_id), str(result["error"])
+            owner.faults.report_work_mode_result(
+                device_id or "site", owner._device_name(device_id), str(result["error"])
             )
         return result
+
+    def _running_controller(self) -> Controller | None:
+        """Return the controller now running this entry, if any.
+
+        A command can outlive its controller (the entry was unloaded or
+        reloaded while it was being sent); its outcome then belongs to the
+        controller that replaced this one, which alone can clear what it
+        raises and owns the stored optimiser timers.
+        """
+        if not self._terminated:
+            return self
+        current = getattr(self.entry, "runtime_data", None)
+        if isinstance(current, Controller) and not current.terminated:
+            return current
+        return None
 
     async def _set_work_mode(
         self, mode: str, data: dict[str, Any], result: dict[str, Any]
@@ -1069,7 +1125,7 @@ class Controller:
                 )
                 return
             post_result = await self.send_reliable_post(
-                f"devices/{device_id}/operatingMode",
+                device_path(device_id, "/operatingMode"),
                 api_payload,
                 superseded=_superseded,
             )
@@ -1186,6 +1242,9 @@ class Controller:
             self._missing_listings[device_id] = count
             if count >= MISSING_AFTER_SITE_POLLS and not device.missing:
                 device.set_missing(True)
+                # Its online flag goes unread while it is missing: the
+                # offline timer restarts when it is back.
+                self.faults.report_offline(device_id, device.display_name, False)
                 self.faults.report_missing(device_id, device.display_name, True)
 
     async def _discover(self, device_id: str, summary: dict[str, Any]) -> None:
@@ -1330,6 +1389,9 @@ class Controller:
                 device.record_poll_failure()
                 continue
             reached = True
+            if self.devices.get(device.device_id) is not device:
+                # Deleted while it was being read.
+                continue
             self._apply_device_payload(device, payload)
         return reached
 

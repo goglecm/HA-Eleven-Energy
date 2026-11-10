@@ -58,6 +58,7 @@ ITEMS: dict[str, str] = {
     "FC-DISC-05": "An inverter that disappears from the site becomes unavailable, raises an issue and can be removed",
     "FC-DISC-06": "Malformed site payloads are reported and retried, never crash",
     "FC-DISC-07": "Discovery survives a failed device read",
+    "FC-DISC-08": "A device id addresses only its own device in every request",
     # --- Entities -------------------------------------------------------------
     "FC-ENT-01": "Curated entities have the documented units, device classes and categories",
     "FC-ENT-02": "Three-phase models get per-phase entities; single-phase models do not",

@@ -1174,7 +1174,12 @@ class HybridInverter:
         self._set_available(False)
 
     def set_missing(self, missing: bool) -> None:
-        """Record whether the inverter has left the site listing."""
+        """Record whether the inverter has left the site listing.
+
+        Leaving it makes the inverter unavailable, as :meth:`mark_unavailable`
+        does, so coming back does not revive the values from before: only a
+        fresh reading does.
+        """
         if self.missing == missing:
             return
         self.missing = missing
@@ -1186,6 +1191,7 @@ class HybridInverter:
         )
         if missing:
             self._set_api_connected(False)
+            self.available = False
         self._write_all_states()
 
     def shut_down(self) -> None:

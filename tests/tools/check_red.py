@@ -1,31 +1,35 @@
-"""Prove every defect test fails on the baseline commit.
+"""Prove every defect test fails on the commit that had the defect.
 
 For each ledger entry in ``tests/DEFECTS.md`` there are tests marked
 ``@pytest.mark.defect("Dnn")``. A test that does not fail on the code that
-had the defect does not catch the defect. This script:
+had the defect does not catch the defect. Each entry's baseline column names
+the commit to prove it against: ``fails`` means the default baseline
+(``29b385d``, the last commit before the audit), ``fails at <sha>`` a later
+commit (for a defect the audit itself introduced). For every such commit this
+script:
 
-1. creates a git worktree of the baseline commit (default ``29b385d``, the
-   last commit before the audit) in a temporary directory;
+1. creates a git worktree of the commit in a temporary directory;
 2. copies the *current* ``tests/`` directory and the tool configuration
    (``pytest.ini``, ``pyproject.toml``, ``mypy.ini``, ``ruff.toml``,
    ``vulture_whitelist.py``) into it, so the current tests and rules run
    against the old integration code;
-3. runs every ``defect`` and ``guard`` test there, with ``--defect-report``;
-4. checks, per ledger entry:
+3. runs every ``defect`` and ``guard`` test there, with ``--defect-report``.
 
-   * the entry has at least one defect or guard test;
-   * for entries whose baseline column is ``fails``: it has a defect test,
-     and every one of its defect tests failed on the baseline for a real
-     reason - not an ``ImportError`` / missing attribute of the integration,
-     which would only prove the test refers to code that did not exist yet;
-   * entries whose baseline column starts with ``n/a`` (nothing to fail
-     against) are listed but not required to fail;
-   * every guard test passed on the baseline: a guard records a place where
-     the old code was already right, so a failing guard is a mis-tagged
-     defect;
+It then checks, per ledger entry, against the run for that entry's commit:
 
-5. writes ``tests/red_check_report.md`` and exits non-zero on any violation,
-   including a collection error on the baseline.
+* the entry has at least one defect or guard test;
+* for entries whose baseline column is ``fails`` / ``fails at <sha>``: it
+  has a defect test, and every one of its defect tests failed there for a
+  real reason - not an ``ImportError`` / missing attribute of the
+  integration, which would only prove the test refers to code that did not
+  exist yet;
+* entries whose baseline column starts with ``n/a`` (nothing to fail
+  against) are listed but not required to fail;
+* every guard test passed there: a guard records a place where the old code
+  was already right, so a failing guard is a mis-tagged defect.
+
+Finally it writes ``tests/red_check_report.md`` and exits non-zero on any
+violation, including a collection error on a baseline.
 
 Usage::
 
@@ -73,6 +77,12 @@ def parse_ledger() -> dict[str, str]:
         if len(cells) >= 5 and re.fullmatch(r"D\d{2}", cells[0]):
             defects[cells[0]] = cells[4].lower()
     return defects
+
+
+def baseline_of(expectation: str, default: str) -> str:
+    """Return the commit an entry is proved against (``fails at <sha>``)."""
+    match = re.fullmatch(r"fails at `?([0-9a-f]{7,40})`?", expectation)
+    return match.group(1) if match else default
 
 
 def _pytest_args(report: Path) -> list[str]:
@@ -154,20 +164,19 @@ def run_baseline(baseline: str, python: str) -> dict[str, dict]:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def main() -> int:
-    """Run the check and write the report."""
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--baseline", default="29b385d")
-    parser.add_argument("--python", default=sys.executable)
-    args = parser.parse_args()
+def complete(
+    results: dict[str, dict], expected: dict[str, dict]
+) -> tuple[dict[str, dict], list[str]]:
+    """Account for current tests a baseline run could not have run.
 
-    ledger = parse_ledger()
-    expected = collect_current(args.python)
-    results = run_baseline(args.baseline, args.python)
+    A test whose whole module did not import there, or a defect case that
+    does not exist there, is recorded as an import failure (not red).
+    Guards parametrised from the code itself (one case per import, say)
+    have cases for new code that the baseline cannot have; they are
+    returned separately, to be listed rather than counted.
+    """
+    results = dict(results)
     ran_modules = {nodeid.split("::")[0] for nodeid in results}
-    # Guards parametrised from the code itself (one case per import, say)
-    # have cases for new code that the baseline cannot have; they are listed,
-    # not counted.
     not_applicable: list[str] = []
     for nodeid, info in expected.items():
         if nodeid in results:
@@ -186,34 +195,55 @@ def main() -> int:
             }
         else:
             not_applicable.append(nodeid)
+    return results, not_applicable
 
-    by_defect: dict[str, list[tuple[str, dict]]] = {defect: [] for defect in ledger}
-    by_guard: dict[str, list[tuple[str, dict]]] = {defect: [] for defect in ledger}
-    unknown: list[str] = []
-    for nodeid, info in results.items():
-        for key, table in (("defects", by_defect), ("guards", by_guard)):
-            for defect in info[key]:
-                if defect in table:
-                    table[defect].append((nodeid, info))
-                else:
-                    unknown.append(f"{nodeid} -> {defect}")
+
+def main() -> int:
+    """Run the check and write the report."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--baseline", default="29b385d")
+    parser.add_argument("--python", default=sys.executable)
+    args = parser.parse_args()
+
+    ledger = parse_ledger()
+    commit_of = {defect: baseline_of(exp, args.baseline) for defect, exp in ledger.items()}
+    expected = collect_current(args.python)
+    runs: dict[str, dict[str, dict]] = {}
+    not_applicable: list[str] = []
+    for commit in sorted(set(commit_of.values())):
+        results, absent = complete(run_baseline(commit, args.python), expected)
+        runs[commit] = results
+        not_applicable += [
+            f"`{nodeid}` (on `{commit}`)"
+            for nodeid in absent
+            if any(commit_of.get(guard) == commit for guard in expected[nodeid]["guards"])
+        ]
+
+    unknown = sorted(
+        f"{nodeid} -> {defect}"
+        for nodeid, info in expected.items()
+        for defect in (*info["defects"], *info["guards"])
+        if defect not in ledger
+    )
 
     problems: list[str] = []
     lines = [
         "# Red check report",
         "",
-        f"Every `defect(...)` and `guard(...)` test run against baseline "
-        f"`{args.baseline}` (the code before the audit) with the current tests.",
-        "Defect tests must fail there; guard tests must pass.",
+        "Every `defect(...)` and `guard(...)` test run, with the current tests, "
+        "against the commit that had the defect: "
+        f"`{args.baseline}` (the code before the audit) unless the ledger says "
+        "`fails at <sha>`. Defect tests must fail there; guard tests must pass.",
         "Generated by `tests/tools/check_red.py`.",
         "",
-        "| Defect | Baseline expectation | Defect tests | Failed on baseline "
+        "| Defect | Baseline expectation | Commit | Defect tests | Failed on baseline "
         "| Guard tests | Passed on baseline | Result |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for defect, expectation in ledger.items():
-        tests = by_defect[defect]
-        guards = by_guard[defect]
+        results = runs[commit_of[defect]]
+        tests = [(nodeid, info) for nodeid, info in results.items() if defect in info["defects"]]
+        guards = [(nodeid, info) for nodeid, info in results.items() if defect in info["guards"]]
         failed = [
             nodeid
             for nodeid, info in tests
@@ -248,7 +278,7 @@ def main() -> int:
                 if nodeid not in guards_passed
             )
         lines.append(
-            f"| {defect} | {expectation} | {len(tests)} | {len(failed)} "
+            f"| {defect} | {expectation} | `{commit_of[defect]}` | {len(tests)} | {len(failed)} "
             f"| {len(guards)} | {len(guards_passed)} | {result} |"
         )
     problems.extend(f"marker not in ledger: {entry}" for entry in unknown)
@@ -261,7 +291,7 @@ def main() -> int:
         "baseline for them to check; they run against the fixed code only.",
         "",
     ]
-    lines += [f"- `{nodeid}`" for nodeid in sorted(not_applicable)] or ["None."]
+    lines += [f"- {case}" for case in sorted(not_applicable)] or ["None."]
     lines += ["", "## Problems", ""]
     lines += [f"- {problem}" for problem in problems] or ["None."]
     REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")

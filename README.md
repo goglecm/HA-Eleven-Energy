@@ -50,7 +50,7 @@ Copy `custom_components/eleven_energy_plus/` from the [latest release](https://g
 
 Setup offers two ways in: <!-- FC-FLOW-01 -->
 
-* **Sign in with an Eleven Energy account** (recommended) - you are sent to Eleven Energy's own sign-in page to log in and approve the connection. Home Assistant never sees a password, the connection is scoped to your site, Home Assistant refreshes it automatically (without reloading anything), and you can withdraw it at any time from the Eleven Energy app. The redirect back to Home Assistant goes through `my.home-assistant.io`, and each sign-in uses a fresh PKCE verifier. <!-- FC-FLOW-03 FC-FLOW-11 FC-AUTH-03 FC-AUTH-04 -->
+* **Sign in with an Eleven Energy account** (recommended) - you are sent to Eleven Energy's own sign-in page to log in and approve the connection. Home Assistant never sees a password, the connection is scoped to your site, Home Assistant refreshes it automatically (without reloading anything), and you can withdraw it at any time from the Eleven Energy app. The redirect back to Home Assistant goes through `my.home-assistant.io`, and each sign-in has its own PKCE verifier, so two started at once (say a Reconfigure and a reauthentication) do not spoil each other. <!-- FC-FLOW-03 FC-FLOW-11 FC-AUTH-03 FC-AUTH-04 -->
 * **Use an API token** - paste a token created in the Eleven Energy app under **Site & System Settings > Access > Add Access**. Right for headless setups. Tokens lapse after 90 days without being used. <!-- FC-FLOW-02 FC-AUTH-01 -->
 
 Whichever way a credential arrives - first setup, Reconfigure or reauthentication - it is checked with Eleven Energy before it is saved. It is refused if Eleven Energy rejects it or cannot be reached, if its site has no hybrid inverter, or (when replacing an existing credential) if it belongs to a different site than the one already set up, which would orphan your devices. A token is refused on the form, so you can paste another; a sign-in ends with the reason. <!-- FC-FLOW-02 FC-FLOW-09 FC-FLOW-12 -->
@@ -156,7 +156,7 @@ An entity never shows a value that did not come from the latest reading. Polling
 
 * If **3 polls in a row** fail for an inverter (about 45 seconds at the default interval), all of its entities become **unavailable** rather than showing stale values; they recover on the next successful poll. A reading the integration fails to process counts as a failed poll. A rejected credential makes them unavailable immediately. <!-- FC-AVAIL-01 FC-AVAIL-02 FC-AUTH-06 -->
 * While the inverter reports itself **offline** (`online: false`), its live readings are unavailable. Online, Status, Firmware Version, API Connection and the nameplate ratings stay available, since they are what explains the outage. <!-- FC-AVAIL-03 -->
-* An inverter that **leaves the site listing** (missing from two listings in a row) becomes unavailable and raises a repair issue; its device can then be deleted from the device page. One that is still listed cannot be deleted, since it would come straight back. <!-- FC-DISC-05 FC-NOTIF-03 -->
+* An inverter that **leaves the site listing** (missing from two listings in a row) becomes unavailable and raises a repair issue; its device can then be deleted from the device page. One that is still listed cannot be deleted, since it would come straight back. When it is listed again, it stays unavailable until it has been read again. <!-- FC-DISC-05 FC-NOTIF-03 -->
 * When the integration stops - unload, reload or a failed unload - every entity goes unavailable first. <!-- FC-AVAIL-04 FC-LIFE-04 -->
 * The **Update Interval** entity stays usable throughout, and **API Connection** says whether polling works. <!-- FC-AVAIL-05 FC-ENT-10 -->
 * A field that is **null or missing** from a reading reads as *unknown*; the previous value is never carried over. The nameplate ratings are the exception: they describe the machine and keep their value. <!-- FC-VAL-03 FC-ENT-05 -->
@@ -170,13 +170,15 @@ A fault that lasts, or that needs you to act, appears under **Settings > Repairs
 
 | Repair | Raised when | Clears when |
 | --- | --- | --- |
-| Eleven Energy cloud unreachable | Every poll has failed for 15 minutes <!-- FC-NOTIF-01 --> | A poll succeeds |
+| Eleven Energy cloud unreachable | Eleven Energy has not answered any poll for 15 minutes <!-- FC-NOTIF-01 --> | It answers again |
 | *Inverter* is offline | The inverter has reported itself offline for 15 minutes <!-- FC-NOTIF-02 --> | It is back online |
 | *Inverter* is no longer on the site | It is missing from the site listing <!-- FC-NOTIF-03 --> | It is listed again, or you delete the device |
 | Work mode change failed on *inverter* | A command failed for a reason other than invalid input (the API, the credential, or an internal error) <!-- FC-NOTIF-04 --> | The next command succeeds |
 | Eleven Energy optimiser off on *inverter* | A work mode was set from Home Assistant 24 hours ago and **Reset Work Mode** has not been sent since <!-- FC-NOTIF-05 --> | Reset Work Mode is sent |
 
-Durations are measured with a clock that ignores changes to the time of day. The optimiser timer survives a restart; if the system clock jumps backwards past it, it starts again. A rejected credential is shown by Home Assistant's own reauthentication prompt plus a notification. Removing the integration removes all of these and anything stored for them. <!-- FC-TIME-01 FC-NOTIF-06 FC-NOTIF-07 FC-NOTIF-09 FC-NOTIF-10 -->
+Durations are measured with a clock that ignores changes to the time of day, and only while the condition can be seen: a rejected credential is an answer from the cloud, so it is not counted as unreachable, and an inverter's offline time starts again after it has been missing from the listing. The optimiser timer survives a restart; if the system clock jumps backwards past it, it starts again. A rejected credential is shown by Home Assistant's own reauthentication prompt plus a notification. <!-- FC-TIME-01 FC-NOTIF-01 FC-NOTIF-02 FC-NOTIF-06 FC-NOTIF-07 FC-NOTIF-09 -->
+
+Unloading or reloading the integration withdraws everything it raised. A command still being sent at that moment reports its outcome to the reloaded integration, or, after an unload, nowhere. Removing the integration removes all of these and anything stored for them. <!-- FC-NOTIF-10 FC-LIFE-05 -->
 
 ## Work modes
 
@@ -335,6 +337,8 @@ At debug level the raw site listing for each newly discovered inverter and the f
 | Entities show *unavailable*, **API Connection** is off | Polls are failing | Check the log for the reason; they recover by themselves when polls succeed. After 15 minutes a repair explains it |
 | Live readings *unavailable*, **Online** is off | The inverter reports itself offline | Check the inverter's power and network; a repair appears after 15 minutes |
 | A repair says an inverter is no longer on the site | It was removed or replaced on the Eleven Energy side | Delete its device from the device page, or wait if it is coming back |
+| Deleting an inverter's device is refused | The site still lists it, so it would come straight back | Remove it on the Eleven Energy side first; once it has been missing from two listings it can be deleted |
+| The log says an inverter was ignored because of an unusable device id | Eleven Energy listed it with an id (`.` or `..`) that cannot address a device | Report it to Eleven Energy; the integration will not guess which device is meant |
 | An energy counter briefly shows *unknown* | It reported a lower value than before (a glitch, or the midnight reset) | Nothing; the next reading settles it. See [Availability](#availability-and-values-you-can-trust) |
 | An action fails with "this site has more than one inverter" | No inverter was chosen on a multi-inverter site | Fill in the **Inverter** field |
 | An action fails with a validation error | A value is out of range or the wrong type | Fix the value; see the limits under [Work modes](#work-modes) |
@@ -345,32 +349,14 @@ At debug level the raw site listing for each newly discovered inverter and the f
 
 Please include a diagnostics download, the integration and Home Assistant versions, and - if the diagnostics aren't enough - a debug log covering at least one poll cycle.
 
-## Development / Testing
+## Contributing
 
-Every module has its own test file, and the suite is held to four gates:
+Contributions are welcome. The integration controls a battery inverter, so every change is held to the same standard: 100 % line and branch coverage, every promised behaviour covered by a passing test, bugs fixed test-first with tests proven to fail on the code that had them, strict typing and lint, mutation testing of the safety-critical modules, and the suite passing on the oldest and newest supported Home Assistant.
 
-* **100 % line and branch coverage** of the integration, with no exclusions.
-* **Functional coverage**: `tests/functional_coverage.py` lists every behaviour the integration promises (the `FC-...` ids tagged in this README) and the combinations that must each be exercised - every credential entry point with every outcome, every action with every failure kind in both response modes, every entity kind under every cause of unavailability, every numeric input with every kind of invalid value. Tests declare what they verify with `@pytest.mark.covers(...)`; a full run fails if anything is uncovered, and writes `tests/functional_coverage_report.md`.
-* **Defects are fixed test-first.** Each one in `tests/DEFECTS.md` has tests marked `@pytest.mark.defect(...)` - at the place it was found and everywhere else the same class of bug could occur - that failed before the fix. `tests/tools/check_red.py` re-proves that by running them against the code before the audit (`tests/red_check_report.md`).
-* **Static analysis**: ruff, mypy `--strict` on the oldest and newest supported Home Assistant, vulture (dead code), and checks that every Home Assistant import is public, every translation key is used and present, and no `except` block swallows an error silently.
-
-Any Home Assistant "Detected ..." deprecation, blocking-call, "not strictly increasing" or negative-counter report about this integration fails the test that caused it. Mutation testing (mutmut) on the safety-critical modules runs weekly; its results are in `tests/mutation_report.md`.
-
-```bash
-python3.14 -m venv .venv
-.venv/bin/pip install -r dev-requirements.txt
-.venv/bin/pytest --cov --cov-branch
-.venv/bin/ruff check custom_components tests
-.venv/bin/mypy custom_components/eleven_energy_plus
-.venv/bin/vulture custom_components tests vulture_whitelist.py --min-confidence 60
-.venv/bin/python tests/tools/check_red.py
-```
-
-CI (`.github/workflows/`) runs the suite against the minimum supported Home Assistant (2026.3) and the latest version the test package supports, a non-blocking canary on the newest Home Assistant release, the lint and type checks, hassfest and the HACS validation, on every push.
-
-### Releasing
-
-The Marketplace and HACS install and update from GitHub **releases**. To publish a version: bump `version` in `custom_components/eleven_energy_plus/manifest.json`, add a `CHANGELOG.md` entry, tag the commit `vX.Y.Z` (matching the manifest), push the tag, and create a GitHub release from it.
+* [CONTRIBUTING.md](CONTRIBUTING.md) - setting up, running the tests and coverage, when and how to add tests, the defect protocol, the gates and CI, releasing.
+* [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - how the integration works: modules, lifecycle, polling, values, commands, fault reporting, the concurrency model and its invariants.
+* [tests/DEFECTS.md](tests/DEFECTS.md) - every defect found, with the tests that caught it.
+* [UPSTREAM.md](UPSTREAM.md) - what was taken from the original integration.
 
 ## Branding / icon
 

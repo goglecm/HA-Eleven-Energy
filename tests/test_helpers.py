@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 
 import pytest
@@ -9,6 +10,7 @@ import voluptuous as vol
 
 from homeassistant.const import EntityCategory
 
+from custom_components.eleven_energy_plus import controller as controller_module
 from custom_components.eleven_energy_plus.const import (
     MAX_POWER_KW,
     MAX_TARGET_MINUTES,
@@ -19,6 +21,7 @@ from custom_components.eleven_energy_plus.controller import (
     _valid_percent,
     _valid_power_kw,
     api_device_label,
+    device_path,
     listed_inverter_ids,
     model_block,
 )
@@ -281,6 +284,50 @@ class TestListedInverters:
     def test_empty_listing(self) -> None:
         assert listed_inverter_ids({"devices": []}) == []
         assert listed_inverter_ids({}) == []
+
+    @pytest.mark.covers("FC-DISC-08")
+    def test_dot_segment_ids_are_refused_with_one_warning(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(controller_module, "_refused_ids", set())
+        payload = {
+            "devices": [
+                {"deviceId": ".", "type": "hybridinverter"},
+                {"deviceId": "..", "type": "hybridinverter"},
+                {"deviceId": "...", "type": "hybridinverter"},
+                {"deviceId": "a.b", "type": "hybridinverter"},
+            ]
+        }
+        assert listed_inverter_ids(payload) == ["...", "a.b"]
+        assert listed_inverter_ids(payload) == ["...", "a.b"]
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == controller_module.__name__ and r.levelno == logging.WARNING
+        ]
+        assert warnings == [
+            "Eleven Energy Plus ignored an inverter listed with the unusable device id '.'",
+            "Eleven Energy Plus ignored an inverter listed with the unusable device id '..'",
+        ]
+
+
+class TestDevicePath:
+    """``device_path`` keeps every device id inside its own path segment."""
+
+    @pytest.mark.covers("FC-DISC-08")
+    @pytest.mark.parametrize(
+        ("device_id", "expected"),
+        [
+            ("abc-123", "devices/abc-123"),
+            ("x/../b", "devices/x%2F..%2Fb"),
+            ("a?b#c", "devices/a%3Fb%23c"),
+            ("a%2Fb", "devices/a%252Fb"),
+            ("a b+c=", "devices/a%20b%2Bc%3D"),
+        ],
+    )
+    def test_the_id_is_one_encoded_segment(self, device_id: str, expected: str) -> None:
+        assert device_path(device_id) == expected
+        assert device_path(device_id, "/operatingMode") == f"{expected}/operatingMode"
 
 
 class TestHumanisePath:

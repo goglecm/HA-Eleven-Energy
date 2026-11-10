@@ -169,11 +169,12 @@ async def async_remove_config_entry_device(
     A device the site still lists would only be recreated by the next poll,
     so deleting it is refused; one that has left the listing (or that the
     integration no longer knows) can go, taking its entities with it. While
-    the entry is not loaded there is no listing to check, so any may go; one
+    the entry is not loaded, or its controller has stopped (a failed unload
+    leaves it attached), there is no listing to check, so any may go; one
     the site still lists is recreated when the entry next loads.
     """
     controller: Controller | None = getattr(entry, "runtime_data", None)
-    if controller is None:
+    if controller is None or controller.terminated:
         return True
     device_ids = [
         identifier

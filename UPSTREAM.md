@@ -5,7 +5,7 @@ at `2aea070`. This table records each of the 28 upstream commits since then
 and what this fork did with it, so nothing useful is lost and nothing is
 taken over blindly.
 
-**Last checked: 2026-11-09.** Upstream `main` is at `78de8d1` (2026-11-05);
+**Last checked: 2026-11-10.** Upstream `main` is at `78de8d1` (2026-11-05);
 the only other branch, `three-phase-and-controls` (`37893a9`), is already
 merged into it. There is nothing newer to review.
 
@@ -21,7 +21,7 @@ by a different design here, with the reason.
 | `5951f67` | 2026-10-24 | Stop fighting Home Assistant over two things it now owns | Already here since 1.4.0: no `OptionsFlowHandler.__init__`, `async_get_options_flow` a `@staticmethod @callback`. |
 | `24d1123` | 2026-10-24 | Report what the machine actually is, and make the actions targetable | Ported: per-phase entities only on three-phase models, per-battery readings. The targeting part was later superseded upstream by the Inverter field (`9de9712`), which is what this fork uses. |
 | `e493ac9` | 2026-10-24 | Correct the entity ids already in the registry, and say so | Not needed: upstream reverted it in `14d4eca`; Home Assistant never stored the id wrongly. |
-| `2bf6f22` | 2026-10-24 | Offer signing in, and keep the API key for those who need it | Ported: account sign-in with Eleven Energy's public client and PKCE, plus a fresh verifier per authorization and an API probe of every new credential. |
+| `2bf6f22` | 2026-10-24 | Offer signing in, and keep the API key for those who need it | Ported: account sign-in with Eleven Energy's public client and PKCE, plus a verifier of its own for every sign-in flow and an API probe of every new credential. |
 | `61fb373` | 2026-10-24 | Offer the work modes as device actions, and fail politely when the API is away | Ported: device actions delegating to the actions, validated when the automation loads; setup retries when the API is away. |
 | `e2e62d8` | 2026-10-24 | Name the work modes as the business names them | Ported: Self Consumption, Grid Charge, Grid Export, Excess PV Export, Idle Battery, Target State Of Charge, Reset Work Mode. |
 | `c1b2c5b` | 2026-10-24 | Choose an implementation before trying to authorise with it | Ported: the menu offers `pick_implementation`. |

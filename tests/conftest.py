@@ -124,8 +124,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         choices=("auto", "strict", "report", "off"),
         default="auto",
         help=(
-            "auto: enforce on a full run, report otherwise; strict: always "
-            "enforce; report: never enforce; off: do nothing."
+            "auto: write the report and enforce on a full run, nothing "
+            "otherwise; strict: always enforce; report: write the report, "
+            "never enforce; off: do nothing."
         ),
     )
 
@@ -142,6 +143,38 @@ class _Collector:
 
 
 _COLLECTOR = _Collector()
+
+# Under pytest-xdist each worker runs some of the tests, and the controller
+# collects none: every test's outcome reaches the controller's
+# ``pytest_runtest_logreport``, but the markers only the workers know. The
+# workers hand theirs over under this key, and only the controller writes the
+# reports and applies the gate.
+WORKER_OUTPUT_KEY = "eleven_energy_plus"
+
+
+def worker_output(collector: _Collector) -> dict[str, Any]:
+    """Return what an xdist worker hands to the controller."""
+    return {
+        "full_run": collector.full_run,
+        "marks": collector.marks,
+        "unknown_ids": {unknown: sorted(ids) for unknown, ids in collector.unknown_ids.items()},
+    }
+
+
+def merge_worker_output(collector: _Collector, output: dict[str, Any]) -> None:
+    """Fold one xdist worker's markers into the controller's collector."""
+    collector.full_run = collector.full_run or output["full_run"]
+    collector.marks.update(output["marks"])
+    for unknown, nodeids in output["unknown_ids"].items():
+        collector.unknown_ids[unknown].update(nodeids)
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: Any, error: Any) -> None:
+    """Merge a finished xdist worker's markers (controller side)."""
+    output = getattr(node, "workeroutput", {}).get(WORKER_OUTPUT_KEY)
+    if output is not None:
+        merge_worker_output(_COLLECTOR, output)
 
 
 def _is_full_run(config: pytest.Config) -> bool:
@@ -224,6 +257,9 @@ def _write_functional_report(covered: dict[str, list[str]]) -> tuple[list[str], 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Write the reports and apply the functional-coverage gate."""
     config = session.config
+    if hasattr(config, "workerinput"):
+        config.workeroutput[WORKER_OUTPUT_KEY] = worker_output(_COLLECTOR)  # type: ignore[attr-defined]
+        return
     defect_report = config.getoption("--defect-report")
     if defect_report:
         payload: dict[str, Any] = {}

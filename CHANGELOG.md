@@ -5,6 +5,52 @@ captured here. Versions correspond to the `version` field in
 `custom_components/eleven_energy_plus/manifest.json`, and the format roughly
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+A review of the parts the 2.0.0 audit did not harden - the lifecycle, the
+flows, diagnostics, sign-in and every point where two things can overlap -
+found eight more defects (`D35`-`D42` in
+[`tests/DEFECTS.md`](tests/DEFECTS.md)), each fixed test-first with its tests
+proven to fail on the commit that had it.
+
+### Fixed
+
+- **A device id could address another device** (D42). Ids from the site
+  listing were used unencoded in request paths, so an id such as `x/../b`
+  would have read, and sent work modes to, inverter `b`. Ids are now encoded
+  as a single path segment, and `.` / `..` are ignored with a warning.
+- **Two sign-ins open at once spoiled each other** (D35): they shared one
+  PKCE verifier, so the first to finish (for example a reauthentication
+  started beside a Reconfigure) failed. Each flow now has its own.
+- **An inverter back in the site listing showed its old values** (D36) until
+  three polls had failed; it now stays unavailable until it is read again.
+- **Reports after unload or reload** (D37): a command still being sent when
+  the integration unloaded raised a repair issue nothing would clear, and
+  after a reload the stopped controller could save optimiser timers over the
+  running one's. Its outcome now goes to the controller running the entry,
+  or nowhere.
+- **A command to an inverter deleted meanwhile** raised an issue for it
+  (D38); a reading arriving after deletion is dropped too.
+- **Outage timers counted unobserved time** (D40): the cloud-unreachable
+  timer ran on through a rejected credential, which is an answer, and an
+  inverter's offline timer through the time it was missing from the
+  listing, so either could raise its repair the moment monitoring resumed.
+- After a failed unload, **diagnostics reported the stopped controller as
+  loaded** (D39) and **devices could not be deleted** although nothing polls
+  the site (D41).
+
+### Documentation
+
+- New [CONTRIBUTING.md](CONTRIBUTING.md) (setup, the three Home Assistant
+  versions, running tests and coverage, when and how to add tests, the
+  defect protocol, static gates, mutation testing, CI, releasing) and
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (modules, lifecycle, polling,
+  values, commands, fault reporting, the concurrency model and its
+  invariants, known limitations). The README is for users and points to
+  both.
+- `tests/tools/check_red.py` proves each ledger entry against the commit
+  that had the defect (`fails at <sha>` in the ledger).
+
 ## 2.0.0 - 2026-11-09
 
 Brings the integration up to Home Assistant 2026.11 (Marketplace, hassfest
@@ -100,7 +146,8 @@ Diagnostics and housekeeping:
 - The percent unit is the plain `"%"` string on every version, which removed
   the version shim.
 - Test suite: one test file per module, 100 % line and branch coverage with
-  no exclusions, a functional-coverage model with a gate, defect sweeps
+  no `pragma: no cover` (only `if TYPE_CHECKING:` blocks are excluded), a
+  functional-coverage model with a gate, defect sweeps
   re-proved red against the pre-audit code (`tests/tools/check_red.py`),
   hypothesis fuzzing, mutation testing, vulture.
 
@@ -148,7 +195,7 @@ Diagnostics and housekeeping:
 ### Added (ported from upstream)
 
 - **Sign in with an Eleven Energy account** (OAuth2 + PKCE, Eleven Energy's
-  public client, fresh verifier per authorization, `my.home-assistant.io`
+  public client, a fresh verifier per authorization (per flow since D35), `my.home-assistant.io`
   redirect). API tokens remain supported. Access tokens are refreshed by
   Home Assistant; a refresh never reloads the integration.
 - **Reconfigure** to switch between signing in and an API token without
@@ -178,7 +225,8 @@ Diagnostics and housekeeping:
   values. The Update Interval entity stays available.
 - **Rejected credentials** (HTTP 401/403, refused token refresh) raise
   `ConfigEntryAuthFailed` at setup and start reauthentication at runtime;
-  polling pauses instead of retrying a credential that will not work.
+  polling pauses rather than hammering a rejected credential (an API token
+  is re-tested every 10 minutes, see D01 above).
 - **Command ordering**: commands to one inverter run one at a time and the
   newest wins - an older command still waiting to retry is abandoned rather
   than overwriting a newer one later.
@@ -226,8 +274,9 @@ Diagnostics and housekeeping:
   `ConfigFlowResult`, `AddConfigEntryEntitiesCallback`.
 - README: Marketplace (2026.11+) and HACS (2026.3-2026.10) installation, the
   false "HACS Default" badge removed, release process documented.
-- `actions/checkout@v7` in workflows; `pytest-homeassistant-custom-component`
-  floor raised to 0.13.375.
+- `actions/checkout@v7` in workflows; the development pin of
+  `pytest-homeassistant-custom-component` raised to 0.13.375 (Home Assistant
+  2026.10.4), with 0.13.320 (2026.3.4) kept in CI for the minimum version.
 
 ## 1.5.0 - 2026-05-24
 

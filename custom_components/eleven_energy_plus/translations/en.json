@@ -391,7 +391,7 @@
     "issues": {
         "cloud_unreachable": {
             "title": "Eleven Energy cloud unreachable",
-            "description": "Eleven Energy Plus has not been able to reach the Eleven Energy API for {minutes} minutes or more. Inverter entities are unavailable until it can. Check this Home Assistant's internet connection, and the Eleven Energy service status. This clears itself once a poll succeeds."
+            "description": "Eleven Energy Plus has not been able to reach the Eleven Energy API for {minutes} minutes or more. Inverter entities are unavailable until it can. Check this Home Assistant's internet connection, and the Eleven Energy service status. This clears itself as soon as Eleven Energy answers again."
         },
         "inverter_offline": {
             "title": "{name} is offline",

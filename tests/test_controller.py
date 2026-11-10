@@ -1226,14 +1226,14 @@ class TestPollCycle:
         assert [str(call[1]) for call in aioclient_mock.mock_calls] == [f"{BASE_URL}site"] * 2
 
     @pytest.mark.usefixtures("inverter_abc")
-    async def test_reports_nothing_when_devices_reject_the_credential(
+    async def test_a_rejection_only_reports_that_the_api_answered(
         self, controller: Controller, aioclient_mock: AiohttpClientMocker
     ) -> None:
         aioclient_mock.get(f"{BASE_URL}site", json=site_payload(site_summary()))
         aioclient_mock.get(f"{BASE_URL}devices/abc", status=401)
         controller.faults.report_poll_cycle = MagicMock()  # type: ignore[method-assign]
         await controller._poll_cycle()
-        controller.faults.report_poll_cycle.assert_not_called()
+        controller.faults.report_poll_cycle.assert_called_once_with(True)
 
     @pytest.mark.usefixtures("inverter_abc")
     async def test_reports_nothing_when_shut_down_mid_cycle(

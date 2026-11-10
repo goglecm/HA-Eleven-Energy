@@ -53,6 +53,20 @@ def entry() -> MockConfigEntry:
     )
 
 
+@pytest.mark.defect("D39")
+@pytest.mark.covers("FC-DIAG-01", "FC-AVAIL-04")
+async def test_a_stopped_controller_is_not_reported_as_loaded(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, entry: MockConfigEntry
+) -> None:
+    _mock(aioclient_mock)
+    assert await setup_entry(hass, entry)
+    with patch.object(hass.config_entries, "async_unload_platforms", return_value=False):
+        assert not await hass.config_entries.async_unload(entry.entry_id)
+    assert entry.state is ConfigEntryState.FAILED_UNLOAD
+    dump = await async_get_config_entry_diagnostics(hass, entry)
+    assert dump["controller"]["loaded"] is False
+
+
 def _mock(aioclient_mock: AiohttpClientMocker, device_id: str = "abc") -> None:
     payload = device_payload(device_id)
     payload["serialNumber"] = "SN-VERY-SECRET"

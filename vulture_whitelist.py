@@ -61,6 +61,8 @@ _.pytest_collection_modifyitems
 _.pytest_runtest_logreport
 _.pytest_sessionfinish
 _.exitstatus  # a required parameter of pytest_sessionfinish
+_.pytest_testnodedown  # pytest-xdist, on the controller as each worker finishes
+_.error  # a required parameter of pytest_testnodedown
 _.auto_enable_custom_integrations
 _.enable_custom_integrations  # requested by the autouse fixture above
 _.fail_on_ha_usage_reports

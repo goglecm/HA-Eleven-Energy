@@ -5,10 +5,12 @@ places: a repair issue (Settings > Repairs), which stays for as long as the
 fault does, and - the first time it appears - a persistent notification, so
 it is seen without going looking. Both go away when the fault does.
 
-* ``cloud_unreachable``: every poll has failed for
-  :data:`~.const.CLOUD_UNREACHABLE_AFTER_SECONDS`.
+* ``cloud_unreachable``: no request has been answered for
+  :data:`~.const.CLOUD_UNREACHABLE_AFTER_SECONDS` (a rejected credential
+  and rate limiting are answers).
 * ``inverter_offline_<id>``: the inverter has reported ``online: false``
-  for :data:`~.const.INVERTER_OFFLINE_AFTER_SECONDS`.
+  for :data:`~.const.INVERTER_OFFLINE_AFTER_SECONDS` (the timer restarts
+  after the inverter has been missing from the listing).
 * ``inverter_missing_<id>``: the inverter has left the site listing; its
   device can then be deleted from the device page.
 * ``work_mode_failed_<id>``: the last work-mode command for the inverter
@@ -88,6 +90,9 @@ class FaultReporter:
         # Inverter device id -> when a work mode other than Reset was set.
         self._optimiser_off_since: dict[str, datetime] = {}
         self._credential_notified = False
+        # Set by :meth:`async_unload`: nothing would be left to clear what a
+        # late report (a command finishing after unload) raised.
+        self._closed = False
 
     @property
     def active_issues(self) -> list[str]:
@@ -150,10 +155,11 @@ class FaultReporter:
         """Raise an issue and, as it appears, a persistent notification.
 
         An issue already raised is left alone, or with ``refresh`` has its
-        text updated (the notification is not shown again).
+        text updated (the notification is not shown again). Once unloaded,
+        nothing is raised.
         """
         already_active = issue_id in self._active
-        if already_active and not refresh:
+        if self._closed or (already_active and not refresh):
             return
         self._active.add(issue_id)
         ir.async_create_issue(
@@ -265,6 +271,8 @@ class FaultReporter:
     @callback
     def record_work_mode(self, device_id: str, service: str) -> None:
         """Start or stop the optimiser timer after a successful command."""
+        if self._closed:
+            return
         if service == RESET_SERVICE:
             if self._optimiser_off_since.pop(device_id, None) is not None:
                 self._save()
@@ -316,7 +324,7 @@ class FaultReporter:
         """Show or withdraw the rejected-credential notification."""
         notification_id = self._notification_id(CREDENTIAL_NOTIFICATION)
         if rejected:
-            if self._credential_notified:
+            if self._closed or self._credential_notified:
                 return
             self._credential_notified = True
             persistent_notification.async_create(
@@ -354,8 +362,11 @@ class FaultReporter:
         """Withdraw everything shown and write the optimiser timers now.
 
         Nothing is monitored once the entry is unloaded, so nothing it showed
-        can be trusted to be cleared later. The timers survive in storage.
+        can be trusted to be cleared later, and nothing reported afterwards
+        is shown or stored: the timers survive in storage, which from then on
+        belongs to the entry's next reporter.
         """
+        self._closed = True
         for issue_id in list(self._active):
             self.clear_issue(issue_id)
         self._since.clear()
